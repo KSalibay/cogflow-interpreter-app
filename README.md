@@ -87,6 +87,7 @@ If the result-file upload fails for any reason, it falls back to submitting the 
 - Rewards **v2** supported end-to-end (screens, milestones, summary) during compilation + runtime.
 - Token Store runs hardened: jsPsych wrapper timeline nodes (with `timeline` but no `type`) are valid and no longer fail plugin validation.
 - Continuous RDM compilation preserves ordering by flushing contiguous RDM frames into in-place `rdm-continuous` segments (so `detection-response-task-start/stop` can bracket the intended segment).
+- DRT (Detection Response Task) is ISO-compliant by default and emits per-trial rows including absolute presentation timestamps and response counts.
 - Gabor visibility debugging: `?debug=1` / `?gabor_debug=1` slows stimulus/mask; debug overlay shows the effective spatial frequency.
 - Fixed a block-window rounding pitfall: `spatial_frequency_cyc_per_px` is **not** rounded to an integer (otherwise values like 0.06 become 0 and the Gabor looks like a circular gradient).
 
@@ -113,6 +114,35 @@ If the result-file upload fails for any reason, it falls back to submitting the 
     - `index.html?id=ABC1234&base=https://your-site/configs&manifest=https://your-site/configs/manifest.json`
 
 - Fallback: no `id` → you can upload a JSON file via the UI.
+
+## DRT (Detection Response Task)
+
+DRT is scheduled explicitly in the compiled timeline using:
+
+- `detection-response-task-start`
+- `detection-response-task-stop`
+
+### ISO defaults
+
+When not overridden by the config, the runtime defaults are ISO-aligned:
+
+- Inter-trial interval: `min_iti_ms=3000`, `max_iti_ms=5000`
+- Stimulus display: `stimulus_duration_ms=1000` (hidden earlier if the participant responds)
+- Valid RT bounds (used for correctness only): `min_rt_ms=100`, `max_rt_ms=2500`
+
+### Per-trial output
+
+The interpreter writes one buffered DRT data row per stimulus/trial (exported alongside jsPsych rows). Key fields include:
+
+- `drt_trial_number` (1-based within the active DRT segment)
+- `drt_rt_ms` (first response RT in ms; recorded even if outside the valid bounds)
+- `drt_response_count` (0 miss, 1 hit, >1 indicates extra responses / false alarms)
+- Absolute onset timestamps: `drt_onset_unix_ms` and `drt_onset_iso`
+
+Notes:
+
+- The per-trial row is finalized at the end of the response window (or when the next DRT trial begins).
+- The runtime also writes `drt_event: start|stop` rows with the effective `drt_settings` for auditing.
 
 ## Quick start (local)
 

@@ -40,7 +40,7 @@
     // Response acceptance bounds (ms after onset). Defaults match the Builder.
     // Backwards-compat: if legacy response_window_ms exists, treat it as max_rt_ms.
     const minRt = clamp(c.min_rt_ms ?? 100, 0, 60000);
-    const maxRtCandidate = c.max_rt_ms ?? c.response_window_ms ?? 2000;
+    const maxRtCandidate = c.max_rt_ms ?? c.response_window_ms ?? 2500;
     const maxRt = clamp(maxRtCandidate, 10, 60000);
     const minRtMs = Math.min(minRt, maxRt);
     const maxRtMs = Math.max(minRt, maxRt);
@@ -162,6 +162,8 @@
     stimulus_visible: false,
     responded: false,
 
+    trial: null,
+
     keyListener: null
   };
 
@@ -169,6 +171,61 @@
     if (state.nextTimer) { clearTimeout(state.nextTimer); state.nextTimer = null; }
     if (state.offTimer) { clearTimeout(state.offTimer); state.offTimer = null; }
     if (state.missTimer) { clearTimeout(state.missTimer); state.missTimer = null; }
+  }
+
+  function clearOffTimer() {
+    if (state.offTimer) { clearTimeout(state.offTimer); state.offTimer = null; }
+  }
+
+  function finalizeTrial({ scheduleNextIfNeeded = false } = {}) {
+    if (!state.trial) return;
+
+    // Prevent this finalize from firing again.
+    if (state.missTimer) {
+      clearTimeout(state.missTimer);
+      state.missTimer = null;
+    }
+
+    const minRtMs = Number(state.cfg?.min_rt_ms) || 0;
+    const maxRtMs = Number(state.cfg?.max_rt_ms) || 0;
+
+    const responded = (state.trial.response_count || 0) > 0;
+    const rt = (state.trial.rt_ms === undefined) ? null : state.trial.rt_ms;
+    const withinBounds = responded && Number.isFinite(rt) && rt >= minRtMs && rt <= maxRtMs;
+    const correct = responded && withinBounds && (state.trial.response_count === 1);
+
+    const row = {
+      plugin_type: 'drt',
+      task_type: 'drt',
+      drt_segment_id: state.segment_id,
+      drt_segment_label: state.cfg ? (state.cfg.segment_label || null) : null,
+
+      // Trial identifiers
+      drt_trial_number: state.trial.trial_number,
+      drt_stimulus_index: state.trial.trial_number,
+
+      // Timing
+      drt_onset_ms: state.trial.onset_ms,
+      drt_onset_unix_ms: state.trial.onset_unix_ms,
+      drt_onset_iso: state.trial.onset_iso,
+
+      // Response summary
+      drt_response_key: state.cfg ? state.cfg.response_key : null,
+      drt_response_count: state.trial.response_count,
+      drt_key: state.trial.key || null,
+      drt_responded: responded,
+      drt_rt_ms: responded ? (Number.isFinite(rt) ? rt : null) : null,
+      drt_correct: correct
+    };
+
+    tryWriteJsPsychRow(row);
+
+    state.trial = null;
+    state.stimulus_onset_ms = null;
+
+    if (scheduleNextIfNeeded && !state.nextTimer) {
+      scheduleNextStimulus();
+    }
   }
 
   function hideStimulus() {
@@ -193,11 +250,26 @@
   function presentStimulus() {
     if (!state.running) return;
 
+    // If a prior trial is still open (possible if ITI < max_rt_ms), finalize it.
+    finalizeTrial({ scheduleNextIfNeeded: false });
     clearTimers();
 
     state.stimulus_index += 1;
     state.responded = false;
-    state.stimulus_onset_ms = nowMs();
+    const onsetMs = nowMs();
+    const onsetUnixMs = Date.now();
+    const onsetIso = new Date(onsetUnixMs).toISOString();
+
+    state.stimulus_onset_ms = onsetMs;
+    state.trial = {
+      trial_number: state.stimulus_index,
+      onset_ms: onsetMs,
+      onset_unix_ms: onsetUnixMs,
+      onset_iso: onsetIso,
+      response_count: 0,
+      rt_ms: null,
+      key: null
+    };
     state.stimulus_visible = true;
 
     const dot = state.overlay ? state.overlay.querySelector('#psy-drt-dot') : null;
@@ -208,39 +280,18 @@
       hideStimulus();
     }, Math.max(0, Math.round(Number(state.cfg.stimulus_duration_ms) || 0)));
 
-    // Mark miss after max_rt_ms if no response.
+    // Finalize trial after max_rt_ms (miss if no response).
     state.missTimer = setTimeout(() => {
       if (!state.running) return;
-      if (state.responded) return;
-
-      const row = {
-        plugin_type: 'drt',
-        task_type: 'drt',
-        drt_segment_id: state.segment_id,
-        drt_segment_label: state.cfg.segment_label || null,
-        drt_stimulus_index: state.stimulus_index,
-        drt_onset_ms: state.stimulus_onset_ms,
-        drt_response_key: state.cfg.response_key,
-        drt_responded: false,
-        drt_rt_ms: null,
-        drt_correct: false
-      };
-
-      tryWriteJsPsychRow(row);
-
-      // Prevent late responses from being attributed to this stimulus.
-      state.responded = true;
-      state.stimulus_onset_ms = null;
       hideStimulus();
-
-      scheduleNextStimulus();
+      // If the trial ended with no response, schedule next stimulus now.
+      finalizeTrial({ scheduleNextIfNeeded: true });
     }, Math.max(0, Math.round(Number(state.cfg.max_rt_ms) || 0)));
   }
 
   function onKeyDown(ev) {
     if (!state.running) return;
-    if (state.stimulus_onset_ms === null) return;
-    if (state.responded) return;
+    if (!state.trial) return;
 
     const key = (ev && typeof ev.key === 'string') ? ev.key : '';
 
@@ -253,35 +304,26 @@
     if (!match) return;
 
     const t = nowMs();
-    const rt = t - state.stimulus_onset_ms;
+    const rt = t - state.trial.onset_ms;
 
-    const minRtMs = Number(state.cfg.min_rt_ms) || 0;
+    // Only count responses during the acceptance window.
     const maxRtMs = Number(state.cfg.max_rt_ms) || 0;
-    const withinBounds = Number.isFinite(rt) && rt >= minRtMs && rt <= maxRtMs;
+    if (!Number.isFinite(rt) || rt < 0 || rt > maxRtMs) {
+      return;
+    }
 
-    state.responded = true;
+    state.trial.response_count = (state.trial.response_count || 0) + 1;
 
-    const row = {
-      plugin_type: 'drt',
-      task_type: 'drt',
-      drt_segment_id: state.segment_id,
-      drt_segment_label: state.cfg.segment_label || null,
-      drt_stimulus_index: state.stimulus_index,
-      drt_onset_ms: state.stimulus_onset_ms,
-      drt_response_key: state.cfg.response_key,
-      drt_key: k,
-      drt_responded: true,
-      drt_rt_ms: Number.isFinite(rt) ? rt : null,
-      drt_correct: withinBounds
-    };
+    // First response: store RT + key, hide stimulus, and schedule next stimulus.
+    if (!state.responded) {
+      state.responded = true;
+      state.trial.rt_ms = Number.isFinite(rt) ? rt : null;
+      state.trial.key = k;
 
-    tryWriteJsPsychRow(row);
-
-    // Once responded, schedule next stimulus.
-    clearTimers();
-    hideStimulus();
-    state.stimulus_onset_ms = null;
-    scheduleNextStimulus();
+      clearOffTimer();
+      hideStimulus();
+      scheduleNextStimulus();
+    }
   }
 
   function start(rawCfg) {
@@ -305,6 +347,7 @@
     state.stimulus_index = 0;
     state.stimulus_onset_ms = null;
     state.responded = false;
+    state.trial = null;
 
     state.keyListener = onKeyDown;
     window.addEventListener('keydown', state.keyListener, { capture: true });
@@ -329,6 +372,7 @@
     }
 
     state.running = false;
+    finalizeTrial({ scheduleNextIfNeeded: false });
     clearTimers();
     hideStimulus();
     state.stimulus_onset_ms = null;

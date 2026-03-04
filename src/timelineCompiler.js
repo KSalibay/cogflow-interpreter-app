@@ -325,7 +325,8 @@
         : 'rdm-trial';
 
     // N-back: treat Block as the generator (Builder UX).
-    if (baseType === 'nback-block') {
+    // Support legacy `nback-block`, the public alias `nback`, and the older name `nback-trial-sequence`.
+    if (baseType === 'nback-block' || baseType === 'nback' || baseType === 'nback-trial-sequence') {
       const src = (block && typeof block === 'object' && block.parameter_values && typeof block.parameter_values === 'object')
         ? { ...block, ...block.parameter_values }
         : (block || {});
@@ -402,6 +403,27 @@
       return {};
     })();
     const values = isObject(block.parameter_values) ? { ...block.parameter_values } : {};
+
+    // Image list helper for image-keyboard-response Blocks.
+    // Builder can export a comma/newline-separated string under `stimulus_images`.
+    // We convert it into an array and feed it through the existing array-sampling path.
+    if (baseType === 'image-keyboard-response') {
+      const parseStringList = (raw) => {
+        const s = (raw === undefined || raw === null) ? '' : String(raw);
+        return s
+          .split(/\r?\n|,/g)
+          .map(x => x.trim())
+          .filter(Boolean);
+      };
+
+      if (typeof values.stimulus_images === 'string' && values.stimulus_images.trim() !== '') {
+        const list = parseStringList(values.stimulus_images);
+        if (list.length > 0) {
+          values.stimulus_image = list;
+        }
+        delete values.stimulus_images;
+      }
+    }
 
     const seedParsed = Number.parseInt((block.seed ?? '').toString(), 10);
     const seed = Number.isFinite(seedParsed) ? (seedParsed >>> 0) : null;
@@ -747,6 +769,30 @@
       };
     }
 
+    function normalizeKeyChoices(raw) {
+      if (raw === undefined || raw === null) return 'ALL_KEYS';
+      if (Array.isArray(raw)) return raw;
+      const s = String(raw).trim();
+      if (!s) return 'ALL_KEYS';
+      const upper = s.toUpperCase();
+      if (upper === 'ALL_KEYS' || upper === 'NO_KEYS') return upper;
+      const parts = s
+        .split(/[\s,]+/)
+        .map(x => x.trim())
+        .filter(Boolean);
+      return parts.length > 0 ? parts : 'ALL_KEYS';
+    }
+
+    function normalizeButtonChoices(raw) {
+      if (raw === undefined || raw === null) return [];
+      if (Array.isArray(raw)) return raw.map(x => String(x));
+      const s = String(raw);
+      return s
+        .split(/[\n,]+/)
+        .map(x => x.trim())
+        .filter(Boolean);
+    }
+
     function resolveMaybeRelativeUrl(rawUrl) {
       const u = (rawUrl === null || rawUrl === undefined) ? '' : String(rawUrl).trim();
       if (!u) return '';
@@ -787,6 +833,10 @@
     ) || resolvePlugin(window.jsPsychHtmlKeyboardResponse);
 
     const HtmlKeyboard = requirePlugin('html-keyboard-response (jsPsychHtmlKeyboardResponse)', HtmlKeyboardResponsePlugin);
+
+    const HtmlButtonResponsePlugin = resolvePlugin(
+      (typeof jsPsychHtmlButtonResponse !== 'undefined') ? jsPsychHtmlButtonResponse : null
+    ) || resolvePlugin(window.jsPsychHtmlButtonResponse);
 
     const experimentType = config.experiment_type || 'trial-based';
     const taskType = config.task_type || 'rdm';
@@ -835,7 +885,7 @@
     const preserveNbackBlocks = (experimentType === 'continuous' && taskType === 'nback');
     const preserveBlocksFor = [
       ...(preservePvtBlocks ? ['pvt-trial'] : []),
-      ...(preserveNbackBlocks ? ['nback-block'] : [])
+      ...(preserveNbackBlocks ? ['nback-block', 'nback', 'nback-trial-sequence'] : [])
     ];
 
     const expandedRaw = expandTimeline(config.timeline, {
@@ -1409,11 +1459,12 @@
         if (type === 'html-keyboard-response' || type === 'instructions') {
           // Keep instructions as their own trial.
           pushRdmContinuousSegment();
+          const stimulus = (item.stimulus !== undefined && item.stimulus !== null) ? item.stimulus : item.stimulus_html;
           timeline.push({
             type: HtmlKeyboard,
-            stimulus: wrapMaybeFunctionStimulus(item.stimulus, item.prompt),
+            stimulus: wrapMaybeFunctionStimulus(stimulus, item.prompt),
             prompt: null,
-            choices: item.choices === 'ALL_KEYS' ? 'ALL_KEYS' : (Array.isArray(item.choices) ? item.choices : 'ALL_KEYS'),
+            choices: normalizeKeyChoices(item.choices),
             stimulus_duration: (item.stimulus_duration === undefined ? null : item.stimulus_duration),
             trial_duration: (item.trial_duration === undefined ? null : item.trial_duration),
             response_ends_trial: (item.response_ends_trial === undefined ? true : item.response_ends_trial),
@@ -1422,9 +1473,32 @@
           continue;
         }
 
+        if (type === 'html-button-response') {
+          pushRdmContinuousSegment();
+          const HtmlButton = requirePlugin('html-button-response (jsPsychHtmlButtonResponse)', HtmlButtonResponsePlugin);
+          const stimulus = (item.stimulus !== undefined && item.stimulus !== null) ? item.stimulus : item.stimulus_html;
+          const choices = normalizeButtonChoices(item.choices !== undefined ? item.choices : item.button_choices);
+          timeline.push({
+            type: HtmlButton,
+            stimulus: wrapMaybeFunctionStimulus(stimulus, item.prompt),
+            prompt: null,
+            choices,
+            ...(item.button_html !== undefined ? { button_html: item.button_html } : {}),
+            stimulus_duration: (item.stimulus_duration === undefined ? null : item.stimulus_duration),
+            trial_duration: (item.trial_duration === undefined ? null : item.trial_duration),
+            ...(item.button_layout !== undefined ? { button_layout: item.button_layout } : {}),
+            ...(item.grid_rows !== undefined ? { grid_rows: item.grid_rows } : {}),
+            ...(item.grid_columns !== undefined ? { grid_columns: item.grid_columns } : {}),
+            response_ends_trial: (item.response_ends_trial === undefined ? true : item.response_ends_trial),
+            data: { plugin_type: type }
+          });
+          continue;
+        }
+
         if (type === 'image-keyboard-response') {
           pushRdmContinuousSegment();
-          const src = resolveMaybeRelativeUrl(item.stimulus);
+          const rawStimulus = (item.stimulus !== undefined && item.stimulus !== null) ? item.stimulus : item.stimulus_image;
+          const src = resolveMaybeRelativeUrl(rawStimulus);
           const w = Number.isFinite(Number(item.stimulus_width)) ? Number(item.stimulus_width) : null;
           const h = Number.isFinite(Number(item.stimulus_height)) ? Number(item.stimulus_height) : null;
           const keep = (item.maintain_aspect_ratio !== undefined) ? (item.maintain_aspect_ratio === true) : true;
@@ -1446,7 +1520,7 @@
             type: HtmlKeyboard,
             stimulus: wrapMaybeFunctionStimulus(stimulusHtml, item.prompt),
             prompt: null,
-            choices: item.choices === 'ALL_KEYS' ? 'ALL_KEYS' : (Array.isArray(item.choices) ? item.choices : 'ALL_KEYS'),
+            choices: normalizeKeyChoices(item.choices),
             stimulus_duration: (item.stimulus_duration === undefined ? null : item.stimulus_duration),
             trial_duration: (item.trial_duration === undefined ? null : item.trial_duration),
             response_ends_trial: (item.response_ends_trial === undefined ? true : item.response_ends_trial),
@@ -1567,7 +1641,8 @@
             : '';
 
         // N-back continuous: Block is the generator.
-        if (baseType === 'nback-block' && experimentType === 'continuous') {
+        // Support legacy `nback-block`, the public alias `nback`, and the older name `nback-trial-sequence`.
+        if ((baseType === 'nback-block' || baseType === 'nback' || baseType === 'nback-trial-sequence') && experimentType === 'continuous') {
           const NbackContinuous = requirePlugin('nback-continuous (window.jsPsychNbackContinuous)', window.jsPsychNbackContinuous);
           const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, 'nback-continuous');
 

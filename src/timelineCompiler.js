@@ -598,6 +598,126 @@
         }
       }
 
+      // Stroop helper: ensure congruency labels match the sampled word/ink.
+      // Builder Blocks can request congruent vs incongruent trials via `congruency`, but the
+      // generic block sampler applies arrays independently. Enforce consistency here so the
+      // compiled trial is coherent and scoring is correct.
+      if (baseType === 'stroop-trial') {
+        const normLower = (v) => (v ?? '').toString().trim().toLowerCase();
+        const requested = normLower(t.congruency || 'auto');
+
+        const wordOptsRaw = normalizeOptions(values.word);
+        const inkOptsRaw = normalizeOptions(values.ink_color_name);
+        const wordOpts = wordOptsRaw.map(x => (x ?? '').toString()).filter(s => s.trim() !== '');
+        const inkOpts = inkOptsRaw.map(x => (x ?? '').toString()).filter(s => s.trim() !== '');
+
+        const currentWord = (t.word ?? '').toString();
+        const currentInk = (t.ink_color_name ?? '').toString();
+
+        if (requested === 'congruent') {
+          // Prefer picking from the intersection of word and ink options.
+          const wordMap = new Map(wordOpts.map(s => [normLower(s), s]));
+          const inkSet = new Set(inkOpts.map(s => normLower(s)));
+          const intersection = [];
+          for (const [k, v] of wordMap.entries()) {
+            if (k && inkSet.has(k)) intersection.push(v);
+          }
+
+          const chosen = sampleFromOptions(intersection.length > 0
+            ? intersection
+            : (wordOpts.length > 0 ? wordOpts : (currentWord ? [currentWord] : []))
+          );
+
+          if (chosen !== null && chosen !== undefined && String(chosen).trim() !== '') {
+            t.word = chosen;
+            t.ink_color_name = chosen;
+          } else if (currentWord.trim() !== '') {
+            t.ink_color_name = currentWord;
+          } else if (currentInk.trim() !== '') {
+            t.word = currentInk;
+          }
+        } else if (requested === 'incongruent') {
+          // Try to pick a (word, ink) pair that differ (case-insensitive).
+          const wList = (wordOpts.length > 0) ? wordOpts : (currentWord ? [currentWord] : []);
+          const iList = (inkOpts.length > 0) ? inkOpts : (currentInk ? [currentInk] : []);
+
+          let w = currentWord;
+          let ink = currentInk;
+          for (let tries = 0; tries < 25; tries++) {
+            const wTry = sampleFromOptions(wList);
+            const iTry = sampleFromOptions(iList);
+            if (wTry === null || iTry === null) break;
+            if (normLower(wTry) && normLower(iTry) && normLower(wTry) !== normLower(iTry)) {
+              w = String(wTry);
+              ink = String(iTry);
+              break;
+            }
+          }
+
+          // If we couldn't find a mismatch by independent sampling, force a mismatch when possible.
+          if (normLower(w) === normLower(ink)) {
+            if (wList.length > 1) {
+              const filtered = wList.filter(x => normLower(x) !== normLower(ink));
+              const picked = sampleFromOptions(filtered.length > 0 ? filtered : wList);
+              if (picked !== null) w = String(picked);
+            }
+            if (normLower(w) === normLower(ink) && iList.length > 1) {
+              const filtered = iList.filter(x => normLower(x) !== normLower(w));
+              const picked = sampleFromOptions(filtered.length > 0 ? filtered : iList);
+              if (picked !== null) ink = String(picked);
+            }
+          }
+
+          if (w && w.trim() !== '') t.word = w;
+          if (ink && ink.trim() !== '') t.ink_color_name = ink;
+        }
+
+        // Always keep the per-trial label consistent with the realized values.
+        const wFinal = normLower(t.word);
+        const iFinal = normLower(t.ink_color_name);
+        if (wFinal && iFinal) {
+          t.congruency = (wFinal === iFinal) ? 'congruent' : 'incongruent';
+        } else {
+          t.congruency = 'auto';
+        }
+      }
+
+      // Emotional Stroop helper: couple list→word sampling so the recorded metadata stays coherent.
+      // Builder Blocks export structured `word_lists`, but the generic block sampler applies arrays
+      // independently. Choose a list first, then a word from that list.
+      if (baseType === 'emotional-stroop-trial') {
+        const rawLists = Array.isArray(values.word_lists) ? values.word_lists : [];
+
+        const normalizeWord = (v) => (v ?? '').toString().trim();
+        const normalizeLabel = (v) => (v ?? '').toString().trim();
+
+        const lists = rawLists.map((raw) => {
+          if (!raw) return null;
+          if (Array.isArray(raw)) {
+            const words = raw.map(normalizeWord).filter(Boolean);
+            return { label: '', words };
+          }
+          if (typeof raw === 'object') {
+            const label = normalizeLabel(raw.label ?? raw.name ?? '');
+            const wordsRaw = Array.isArray(raw.words) ? raw.words : [];
+            const words = wordsRaw.map(normalizeWord).filter(Boolean);
+            return { label, words };
+          }
+          return null;
+        }).filter((x) => x && Array.isArray(x.words) && x.words.length > 0);
+
+        if (lists.length > 0) {
+          const idx = Math.min(lists.length - 1, Math.max(0, Math.floor(rng() * lists.length)));
+          const chosenList = lists[idx];
+          const chosenWord = sampleFromOptions(chosenList.words);
+          if (chosenWord !== null && chosenWord !== undefined && normalizeWord(chosenWord) !== '') {
+            t.word = normalizeWord(chosenWord);
+            t.word_list_index = idx + 1;
+            if (chosenList.label) t.word_list_label = chosenList.label;
+          }
+        }
+      }
+
       // Adaptive override for the selected parameter.
       if (staircase && adaptiveMeta && typeof adaptiveMeta.parameter === 'string') {
         const p = adaptiveMeta.parameter;
@@ -862,6 +982,7 @@
 
     const gaborDefaults = isObject(config.gabor_settings) ? config.gabor_settings : {};
     const stroopDefaults = isObject(config.stroop_settings) ? config.stroop_settings : {};
+    const emotionalStroopDefaults = isObject(config.emotional_stroop_settings) ? config.emotional_stroop_settings : {};
     const simonDefaults = isObject(config.simon_settings) ? config.simon_settings : {};
     const pvtDefaults = isObject(config.pvt_settings) ? config.pvt_settings : {};
     const nbackDefaults = isObject(config.nback_settings) ? config.nback_settings : {};
@@ -2410,13 +2531,23 @@
           ? Number(item.iti_ms)
           : (Number.isFinite(Number(stroopDefaults.iti_ms)) ? Number(stroopDefaults.iti_ms) : 0);
 
-        const word = norm(item.word || '');
-        const inkName = norm(item.ink_color_name || '');
+        // If a trial omits word/ink, fall back to experiment-wide stimuli rather than
+        // letting the plugin defaults (RED/BLUE) leak into customized experiments.
+        const stimulusNames = stimuli.map((s) => norm(s && s.name)).filter(Boolean);
 
-        const providedCongruency = norm(item.congruency || 'auto').toLowerCase();
-        const congruency = (providedCongruency === 'congruent' || providedCongruency === 'incongruent')
-          ? providedCongruency
-          : computeCongruency(word, inkName);
+        const word = (() => {
+          const w = norm(item.word || '');
+          return w || (stimulusNames[0] || 'RED');
+        })();
+
+        const inkName = (() => {
+          const n = norm(item.ink_color_name || '');
+          return n || (stimulusNames[1] || stimulusNames[0] || 'BLUE');
+        })();
+
+        // Always compute congruency from the realized word/ink values.
+        // (Block generation and/or manual edits can otherwise leave a stale label that breaks scoring.)
+        const congruency = computeCongruency(word, inkName);
 
         const inkHex = findInkHex(inkName, item.ink_color_hex);
 
@@ -2444,6 +2575,134 @@
           data: {
             plugin_type: type,
             task_type: 'stroop',
+            _generated_from_block: !!item._generated_from_block,
+            _block_index: Number.isFinite(item._block_index) ? item._block_index : null
+          }
+        };
+        timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
+        continue;
+      }
+
+      // Emotional Stroop task (color naming only; uses the same Stroop plugin)
+      if (type === 'emotional-stroop-trial') {
+        const Stroop = requirePlugin('stroop (window.jsPsychStroop)', window.jsPsychStroop);
+        const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, type);
+
+        const itemCopy = { ...item };
+        delete itemCopy.type;
+        delete itemCopy.on_start;
+        delete itemCopy.on_finish;
+
+        const stimuli = Array.isArray(emotionalStroopDefaults.stimuli) ? emotionalStroopDefaults.stimuli : [];
+        const wordOptions = Array.isArray(emotionalStroopDefaults.word_options) ? emotionalStroopDefaults.word_options : [];
+        const wordListsDefaults = Array.isArray(emotionalStroopDefaults.word_lists) ? emotionalStroopDefaults.word_lists : [];
+
+        const toStr = (v) => (v === undefined || v === null) ? '' : v.toString();
+        const norm = (v) => toStr(v).trim();
+
+        const findInkHex = (inkName, fallbackHex) => {
+          const needle = norm(inkName).toLowerCase();
+          for (const s of stimuli) {
+            const n = norm(s && s.name).toLowerCase();
+            if (n && n === needle) {
+              const c = norm(s && (s.color || s.hex || s.color_hex));
+              if (c) return c;
+            }
+          }
+          return norm(fallbackHex) || '#ffffff';
+        };
+
+        const computeCongruency = (word, inkName) => {
+          const w = norm(word).toLowerCase();
+          const i = norm(inkName).toLowerCase();
+          if (!w || !i) return 'auto';
+          return (w === i) ? 'congruent' : 'incongruent';
+        };
+
+        const responseMode = 'color_naming';
+
+        const responseDevice = (item.response_device && item.response_device !== 'inherit')
+          ? item.response_device
+          : (emotionalStroopDefaults.response_device || 'keyboard');
+
+        const choiceKeys = (Array.isArray(item.choice_keys) && item.choice_keys.length > 0)
+          ? item.choice_keys
+          : (Array.isArray(emotionalStroopDefaults.choice_keys) ? emotionalStroopDefaults.choice_keys : []);
+
+        const fontSizePx = Number.isFinite(Number(item.stimulus_font_size_px))
+          ? Number(item.stimulus_font_size_px)
+          : (Number.isFinite(Number(emotionalStroopDefaults.stimulus_font_size_px)) ? Number(emotionalStroopDefaults.stimulus_font_size_px) : 72);
+
+        const stimMs = Number.isFinite(Number(item.stimulus_duration_ms))
+          ? Number(item.stimulus_duration_ms)
+          : (Number.isFinite(Number(emotionalStroopDefaults.stimulus_duration_ms)) ? Number(emotionalStroopDefaults.stimulus_duration_ms) : 0);
+
+        const trialMs = Number.isFinite(Number(item.trial_duration_ms))
+          ? Number(item.trial_duration_ms)
+          : (Number.isFinite(Number(emotionalStroopDefaults.trial_duration_ms)) ? Number(emotionalStroopDefaults.trial_duration_ms) : 2000);
+
+        const itiMs = Number.isFinite(Number(item.iti_ms))
+          ? Number(item.iti_ms)
+          : (Number.isFinite(Number(emotionalStroopDefaults.iti_ms)) ? Number(emotionalStroopDefaults.iti_ms) : 0);
+
+        const stimulusNames = stimuli.map((s) => norm(s && s.name)).filter(Boolean);
+
+        const wordListIndex = (() => {
+          const n = Number(item.word_list_index);
+          return Number.isFinite(n) ? parseInt(n, 10) : null;
+        })();
+
+        const wordListLabel = (() => {
+          const direct = norm(item.word_list_label || '');
+          if (direct) return direct;
+          if (!wordListIndex || wordListIndex < 1) return '';
+          const def = wordListsDefaults[wordListIndex - 1];
+          if (def && typeof def === 'object' && !Array.isArray(def)) {
+            const lbl = norm(def.label ?? def.name ?? '');
+            if (lbl) return lbl;
+          }
+          return '';
+        })();
+
+        const word = (() => {
+          const w = norm(item.word || '');
+          if (w) return w;
+          const opt0 = norm(wordOptions[0] || '');
+          return opt0 || 'HAPPY';
+        })();
+
+        const inkName = (() => {
+          const n = norm(item.ink_color_name || '');
+          return n || (stimulusNames[0] || 'BLUE');
+        })();
+
+        const congruency = computeCongruency(word, inkName);
+        const inkHex = findInkHex(inkName, item.ink_color_hex);
+
+        const trial = {
+          type: Stroop,
+
+          ...itemCopy,
+
+          stimuli,
+          response_mode: responseMode,
+          response_device: responseDevice,
+          choice_keys: choiceKeys,
+          stimulus_font_size_px: fontSizePx,
+          stimulus_duration_ms: stimMs,
+          trial_duration_ms: trialMs,
+          ink_color_hex: inkHex,
+          congruency,
+
+          post_trial_gap: itiMs,
+          ...(onFinish ? { on_finish: onFinish } : {}),
+
+          data: {
+            plugin_type: type,
+            task_type: 'emotional-stroop',
+            original_type: type,
+            word_list_label: wordListLabel || null,
+            word_list_index: wordListIndex,
             _generated_from_block: !!item._generated_from_block,
             _block_index: Number.isFinite(item._block_index) ? item._block_index : null
           }

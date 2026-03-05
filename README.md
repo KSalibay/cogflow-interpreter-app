@@ -6,7 +6,7 @@
 
 Static runtime that loads a CogFlow Builder export and runs it via jsPsych.
 
-## Recommended workflow (Feb 2026): Builder → Token Store → Interpreter (JATOS)
+## Recommended workflow: Builder → Token Store → Interpreter (JATOS)
 
 The default “demo-ready” deployment path is:
 
@@ -79,17 +79,52 @@ If the result-file upload fails for any reason, it falls back to submitting the 
 - Interpreter repo: https://github.com/KSalibay/json-interpreter-app
 - Builder repo: https://github.com/KSalibay/json-builder-app
 
-## Recent highlights (Feb 2026)
+## What this runtime does
 
-- N-back support added end-to-end (compilation + runtime rendering) for both **trial-based** and **continuous** N-back exports.
-- Fixation cross support added as an ITI visual marker via `show_fixation_cross_between_trials`.
-- UI/theming improvements aligned with the CogFlow palette and typography updates (to match Builder exports and improve readability).
-- Rewards **v2** supported end-to-end (screens, milestones, summary) during compilation + runtime.
-- Token Store runs hardened: jsPsych wrapper timeline nodes (with `timeline` but no `type`) are valid and no longer fail plugin validation.
-- Continuous RDM compilation preserves ordering by flushing contiguous RDM frames into in-place `rdm-continuous` segments (so `detection-response-task-start/stop` can bracket the intended segment).
-- DRT (Detection Response Task) is ISO-compliant by default and emits per-trial rows including absolute presentation timestamps and response counts.
-- Gabor visibility debugging: `?debug=1` / `?gabor_debug=1` slows stimulus/mask; debug overlay shows the effective spatial frequency.
-- Fixed a block-window rounding pitfall: `spatial_frequency_cyc_per_px` is **not** rounded to an integer (otherwise values like 0.06 become 0 and the Gabor looks like a circular gradient).
+CogFlow Interpreter is a static jsPsych runtime that loads a CogFlow config (often from the Token Store inside JATOS), compiles it into a jsPsych timeline, runs it, and uploads results back to JATOS.
+
+Key features:
+
+- Token Store loading (single-config or multi-config bundle via JATOS Component Properties)
+- Block expansion (parameter windows/ranges) + adaptive blocks (QUEST/staircase)
+- Trial-based tasks + continuous-mode tasks (including SOC Dashboard)
+- DRT (Detection Response Task) scheduling via explicit start/stop components (ISO defaults supported)
+- Rewards v2 integration (compile-time wrapping + runtime screens/milestones)
+- Optional eye tracking via WebGazer (permission + calibration injection, plus output bundling)
+- Theming support via `ui_settings.theme` (from Builder exports)
+
+## Supported tasks and timeline component types
+
+The Interpreter primarily consumes `timeline[]` items by their `type`.
+
+Common components:
+
+- `html-keyboard-response` (includes Builder-authored Instructions)
+- `html-button-response`
+- `image-keyboard-response`
+- `survey-response`
+- `visual-angle-calibration`
+- `reward-settings`
+- `block`
+- `detection-response-task-start`, `detection-response-task-stop`
+
+Task components:
+
+- RDM: `rdm-trial`, `rdm-practice`, `rdm-adaptive`, `rdm-dot-groups` (continuous exports may compile contiguous frames into `rdm-continuous` segments)
+- Flanker: `flanker-trial`
+- SART: `sart-trial`
+- Gabor: `gabor-trial`
+- Stroop: `stroop-trial`
+- Emotional Stroop: `emotional-stroop-trial` (runs through the same plugin as Stroop, forced `response_mode: "color_naming"`)
+- Simon: `simon-trial`
+- PVT: `pvt-trial`
+- N-back: `nback-block` (compiled by trial-based or continuous N-back plugins depending on config defaults)
+- SOC Dashboard: `soc-dashboard` with `subtasks[]` types `sart-like`, `nback-like`, `flanker-like`, `wcst-like`, `pvt-like`
+
+Emotional Stroop notes:
+
+- Builder exports top-level defaults under `emotional_stroop_settings` (including `word_lists` / `word_options` and the shared Stroop ink `stimuli`).
+- During Block expansion, the compiler couples list selection to word selection so the per-trial metadata `word_list_label` / `word_list_index` stays coherent.
 
 ## How it loads configs
 
@@ -178,7 +213,7 @@ Gabor-specific debug:
 If Live Server doesn't expose a directory listing, generate/update the manifest:
 - PowerShell: `powershell -ExecutionPolicy Bypass -File scripts/generate-manifest.ps1`
 
-## SOC Dashboard (Feb 2026)
+## SOC Dashboard
 
 The interpreter includes a custom jsPsych plugin that renders a multi-window “SOC desktop” inside a single jsPsych trial.
 
@@ -274,13 +309,14 @@ SOC Dashboard data is written into the trial’s `events` array. Key event types
 - WCST-like: `wcst_subtask_start`, `wcst_present`, `wcst_response`, `wcst_omission`, `wcst_rule_change`, `wcst_subtask_forced_end`
 - PVT-like: `pvt_like_subtask_start`, `pvt_like_alert_scheduled`, `pvt_like_countdown_start`, `pvt_like_flash_onset`, `pvt_like_response`, `pvt_like_false_start`, `pvt_like_timeout`, `pvt_like_subtask_auto_end`, `pvt_like_subtask_forced_end`
 
-## Trial-based tasks (Feb 2026)
+## Trial-based tasks
 
 The interpreter includes additional jsPsych plugins for trial-based tasks compiled from CogFlow Builder exports.
 
 ### Included sample configs
 
 - Stroop: `.../index.html?id=sample_stroop_01&debug=1`
+- Emotional Stroop: export from the Builder (task type `emotional-stroop`) and run via Token Store / JATOS
 - Simon: `.../index.html?id=sample_simon_01&debug=1`
 - PVT: `.../index.html?id=sample_pvt_01&debug=1`
 - N-back (trial-based): `.../index.html?id=sample_nback_trial_based&debug=1`
@@ -289,6 +325,7 @@ The interpreter includes additional jsPsych plugins for trial-based tasks compil
 ### Component types
 
 - `stroop-trial` (plugin: `src/jspsych-stroop.js`)
+- `emotional-stroop-trial` (plugin: `src/jspsych-stroop.js`, forced `response_mode: "color_naming"`)
 - `simon-trial` (plugin: `src/jspsych-simon.js`)
 - `pvt-trial` (plugin: `src/jspsych-pvt.js`)
 - `nback-block` (plugins: `src/jspsych-nback.js` for trial-based, `src/jspsych-nback-continuous.js` for continuous)
@@ -298,6 +335,7 @@ The interpreter includes additional jsPsych plugins for trial-based tasks compil
 Builder exports task-specific defaults at the top level (merged into each trial when fields are missing):
 
 - `stroop_settings`
+- `emotional_stroop_settings`
 - `simon_settings`
 - `pvt_settings`
 - `nback_settings`

@@ -150,14 +150,16 @@
       const responseMode = norm(trial.response_mode || 'color_naming').toLowerCase();
       const responseDevice = norm(trial.response_device || 'keyboard').toLowerCase();
 
-      const word = norm(trial.word || '');
-      const inkColorName = norm(trial.ink_color_name || '');
+      // If a trial omits word/ink, prefer the provided stimuli list over built-in defaults.
+      const stimulusNames = stimuli.map((s) => norm(s && s.name)).filter(Boolean);
+
+      const word = norm(trial.word || '') || (stimulusNames[0] || 'RED');
+      const inkColorName = norm(trial.ink_color_name || '') || (stimulusNames[1] || stimulusNames[0] || 'BLUE');
       const inkColorHex = findStimulusColorHex(stimuli, inkColorName, trial.ink_color_hex);
 
-      const providedCongruency = norm(trial.congruency || 'auto').toLowerCase();
-      const congruency = (providedCongruency === 'congruent' || providedCongruency === 'incongruent')
-        ? providedCongruency
-        : computeCongruency(word, inkColorName);
+      // Always compute congruency from the realized word/ink values.
+      // (Configs or Block generation can otherwise carry a stale label that breaks scoring.)
+      const congruency = computeCongruency(word, inkColorName);
 
       const fontSizePx = Number.isFinite(Number(trial.stimulus_font_size_px)) ? Number(trial.stimulus_font_size_px) : 72;
       const stimMs = Number.isFinite(Number(trial.stimulus_duration_ms)) ? Number(trial.stimulus_duration_ms) : 0;

@@ -526,6 +526,43 @@
       }
     }
 
+    const tsDefaults = (opts && isObject(opts.taskSwitchingDefaults)) ? opts.taskSwitchingDefaults : {};
+    const tsMode = (tsDefaults.stimulus_set_mode ?? 'letters_numbers').toString().trim().toLowerCase() === 'custom'
+      ? 'custom'
+      : 'letters_numbers';
+    const tsTasks = Array.isArray(tsDefaults.tasks) ? tsDefaults.tasks : [];
+    const tsLetters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+    const tsDigits = '123456789'.split('');
+    const tsGetCustomPool = (taskIndex) => {
+      const idx = (taskIndex === 2) ? 1 : 0;
+      const t = (tsTasks[idx] && typeof tsTasks[idx] === 'object') ? tsTasks[idx] : {};
+      const a = Array.isArray(t.category_a_tokens) ? t.category_a_tokens : [];
+      const b = Array.isArray(t.category_b_tokens) ? t.category_b_tokens : [];
+      const pool = [...a, ...b]
+        .map(x => (x ?? '').toString().trim())
+        .filter(Boolean);
+      return pool;
+    };
+    const tsPick = (arr, fallback) => {
+      const a = Array.isArray(arr) ? arr : [];
+      if (a.length === 0) return fallback;
+      const idx = Math.floor(rng() * a.length);
+      return a[Math.max(0, Math.min(a.length - 1, idx))];
+    };
+
+    const normalizeTsTrialType = (raw) => {
+      const s = (raw ?? '').toString().trim().toLowerCase();
+      if (s === 'single' || s === 'one' || s === 'one_task' || s === 'single_task') return 'single';
+      if (s === 'switch' || s === 'two' || s === 'switching' || s === 'task_switching') return 'switch';
+      return 'switch';
+    };
+    const normalizeTsTaskIndex = (raw, fallback) => {
+      const n = Number.parseInt(raw, 10);
+      if (n === 2) return 2;
+      if (n === 1) return 1;
+      return fallback;
+    };
+
     const trials = [];
     for (let i = 0; i < length; i++) {
       const t = { type: baseType, _generated_from_block: true, _block_index: i };
@@ -547,6 +584,50 @@
         const isCyclesPerPx = /cyc_per_px$/i.test(k);
         const shouldRound = !isCyclesPerPx && /(_ms|_px|_deg|_count|_trials|_repetitions)$/i.test(k);
         t[k] = shouldRound ? Math.round(s) : s;
+      }
+
+      // Task Switching Block generation: fill task_index + stimulus if not explicitly provided.
+      // This is done here (inside the normal Block sampling loop) so all block parameters
+      // in `values`/`windows` propagate into the generated trials.
+      if (baseType === 'task-switching-trial') {
+        const trialType = normalizeTsTrialType(t.trial_type);
+        const fixedTask = normalizeTsTaskIndex(t.single_task_index, 1);
+        const computedTaskIndex = (trialType === 'single') ? fixedTask : ((i % 2) + 1);
+
+        if (t.task_index === undefined || t.task_index === null || t.task_index === '') {
+          t.task_index = computedTaskIndex;
+        } else {
+          t.task_index = normalizeTsTaskIndex(t.task_index, computedTaskIndex);
+        }
+
+        const pickToken = (taskIndex) => {
+          const idx = (taskIndex === 2) ? 2 : 1;
+          if (tsMode === 'custom') {
+            const pool = tsGetCustomPool(idx);
+            return tsPick(pool, (idx === 2 ? '1' : 'A'));
+          }
+          return (idx === 2) ? tsPick(tsDigits, '1') : tsPick(tsLetters, 'A');
+        };
+
+        const stim1Raw = (t.stimulus_task_1 ?? '').toString().trim();
+        const stim2Raw = (t.stimulus_task_2 ?? '').toString().trim();
+        const stim1 = stim1Raw || pickToken(1);
+        const stim2 = stim2Raw || pickToken(2);
+
+        t.stimulus_task_1 = stim1;
+        t.stimulus_task_2 = stim2;
+        t.stimulus = `${stim1} ${stim2}`;
+
+        // Minimal fallbacks for cue-related fields so the plugin has predictable inputs.
+        const cueType = (t.cue_type ?? '').toString().trim().toLowerCase();
+        if (cueType === 'position') {
+          if (!t.task_1_position) t.task_1_position = 'left';
+          if (!t.task_2_position) t.task_2_position = 'right';
+        }
+        if (cueType === 'explicit') {
+          if (!t.task_1_cue_text) t.task_1_cue_text = 'LETTERS';
+          if (!t.task_2_cue_text) t.task_2_cue_text = 'NUMBERS';
+        }
       }
 
       // Gabor cue presence gating (optional): jointly sample spatial/value cue presence per trial.
@@ -984,6 +1065,7 @@
     const stroopDefaults = isObject(config.stroop_settings) ? config.stroop_settings : {};
     const emotionalStroopDefaults = isObject(config.emotional_stroop_settings) ? config.emotional_stroop_settings : {};
     const simonDefaults = isObject(config.simon_settings) ? config.simon_settings : {};
+    const taskSwitchingDefaults = isObject(config.task_switching_settings) ? config.task_switching_settings : {};
     const pvtDefaults = isObject(config.pvt_settings) ? config.pvt_settings : {};
     const nbackDefaults = isObject(config.nback_settings) ? config.nback_settings : {};
 
@@ -1012,7 +1094,8 @@
     const expandedRaw = expandTimeline(config.timeline, {
       preserveBlocksForComponentTypes: preserveBlocksFor,
       expandNbackSequences: experimentType === 'trial-based',
-      nbackDefaults
+      nbackDefaults,
+      taskSwitchingDefaults
     });
 
     // SOC Dashboard: the Builder has "helper" component types (`soc-subtask-*`, `soc-dashboard-icon`) that are
@@ -2832,6 +2915,152 @@
             _block_index: Number.isFinite(item._block_index) ? item._block_index : null
           }
         };
+        timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
+        continue;
+      }
+
+      // Task Switching
+      if (type === 'task-switching-trial') {
+        const TaskSwitching = requirePlugin('task-switching (window.jsPsychTaskSwitching)', window.jsPsychTaskSwitching);
+        const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, type);
+
+        const itemCopy = { ...item };
+        delete itemCopy.type;
+        delete itemCopy.on_start;
+        delete itemCopy.on_finish;
+
+        const toStr = (v) => (v === undefined || v === null) ? '' : v.toString();
+        const norm = (v) => toStr(v).trim();
+
+        const parseBool = (v) => {
+          if (typeof v === 'boolean') return v;
+          if (typeof v === 'number') return v > 0;
+          if (typeof v === 'string') {
+            const s = v.trim().toLowerCase();
+            if (s === '' || s === 'inherit') return null;
+            if (s === 'true' || s === '1' || s === 'yes' || s === 'on' || s === 'enabled') return true;
+            if (s === 'false' || s === '0' || s === 'no' || s === 'off' || s === 'disabled') return false;
+          }
+          return null;
+        };
+
+        const coerceTaskIndex = (v, fallback) => {
+          const n = Number.parseInt(v, 10);
+          if (n === 2) return 2;
+          if (n === 1) return 1;
+          return fallback;
+        };
+
+        const coercePosition = (v, fallback) => {
+          const s = norm(v).toLowerCase();
+          if (s === 'left' || s === 'right' || s === 'top' || s === 'bottom') return s;
+          return fallback;
+        };
+
+        const coerceMode = (v, fallback) => {
+          const s = norm(v).toLowerCase();
+          if (s === 'custom') return 'custom';
+          if (s === 'letters_numbers') return 'letters_numbers';
+          return fallback;
+        };
+
+        const mode = coerceMode(
+          (item.stimulus_set_mode && item.stimulus_set_mode !== 'inherit') ? item.stimulus_set_mode : null,
+          coerceMode(taskSwitchingDefaults.stimulus_set_mode, 'letters_numbers')
+        );
+
+        const tasks = Array.isArray(taskSwitchingDefaults.tasks) ? taskSwitchingDefaults.tasks : [];
+
+        const taskIndex = coerceTaskIndex(item.task_index, 1);
+
+        const stimParts = (() => {
+          const raw = norm(item.stimulus);
+          if (!raw) return [];
+          return raw.split(/\s+/).map(s => s.trim()).filter(Boolean);
+        })();
+
+        let stimulusTask1 = norm(item.stimulus_task_1);
+        let stimulusTask2 = norm(item.stimulus_task_2);
+
+        if ((!stimulusTask1 || !stimulusTask2) && stimParts.length >= 2) {
+          if (!stimulusTask1) stimulusTask1 = stimParts[0];
+          if (!stimulusTask2) stimulusTask2 = stimParts[1];
+        }
+
+        const legacyStimulus = norm(item.stimulus);
+        if (!stimulusTask1) {
+          stimulusTask1 = (taskIndex === 1 && legacyStimulus) ? legacyStimulus : 'A';
+        }
+        if (!stimulusTask2) {
+          stimulusTask2 = (taskIndex === 2 && legacyStimulus) ? legacyStimulus : '1';
+        }
+
+        const stimulus = `${stimulusTask1} ${stimulusTask2}`;
+
+        const position = coercePosition(
+          (item.stimulus_position && item.stimulus_position !== 'inherit') ? item.stimulus_position : null,
+          coercePosition(taskSwitchingDefaults.stimulus_position, 'top')
+        );
+
+        const borderEnabled = (() => {
+          const a = parseBool(item.border_enabled);
+          if (a !== null) return a;
+          const b = parseBool(taskSwitchingDefaults.border_enabled);
+          if (b !== null) return b;
+          return false;
+        })();
+
+        const leftKey = (typeof item.left_key === 'string' && item.left_key.trim() !== '' && item.left_key !== 'inherit')
+          ? item.left_key
+          : (typeof taskSwitchingDefaults.left_key === 'string' && taskSwitchingDefaults.left_key.trim() !== '' ? taskSwitchingDefaults.left_key : 'f');
+
+        const rightKey = (typeof item.right_key === 'string' && item.right_key.trim() !== '' && item.right_key !== 'inherit')
+          ? item.right_key
+          : (typeof taskSwitchingDefaults.right_key === 'string' && taskSwitchingDefaults.right_key.trim() !== '' ? taskSwitchingDefaults.right_key : 'j');
+
+        const stimMs = Number.isFinite(Number(item.stimulus_duration_ms))
+          ? Number(item.stimulus_duration_ms)
+          : (Number.isFinite(Number(taskSwitchingDefaults.stimulus_duration_ms)) ? Number(taskSwitchingDefaults.stimulus_duration_ms) : 0);
+
+        const trialMs = Number.isFinite(Number(item.trial_duration_ms))
+          ? Number(item.trial_duration_ms)
+          : (Number.isFinite(Number(taskSwitchingDefaults.trial_duration_ms)) ? Number(taskSwitchingDefaults.trial_duration_ms) : 2000);
+
+        const itiMs = Number.isFinite(Number(item.iti_ms))
+          ? Number(item.iti_ms)
+          : (Number.isFinite(Number(taskSwitchingDefaults.iti_ms)) ? Number(taskSwitchingDefaults.iti_ms) : baseIti);
+
+        const trial = {
+          type: TaskSwitching,
+
+          ...itemCopy,
+
+          task_index: taskIndex,
+          stimulus,
+          stimulus_task_1: stimulusTask1,
+          stimulus_task_2: stimulusTask2,
+          stimulus_position: position,
+          border_enabled: borderEnabled,
+          left_key: leftKey,
+          right_key: rightKey,
+          stimulus_set_mode: mode,
+          tasks,
+
+          stimulus_duration_ms: stimMs,
+          trial_duration_ms: trialMs,
+
+          iti_ms: itiMs,
+          post_trial_gap: itiMs,
+          ...(onFinish ? { on_finish: onFinish } : {}),
+
+          data: {
+            plugin_type: type,
+            task_type: 'task-switching',
+            _generated_from_block: !!item._generated_from_block,
+            _block_index: Number.isFinite(item._block_index) ? item._block_index : null
+          }
+        };
+
         timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
         continue;
       }

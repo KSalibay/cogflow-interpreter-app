@@ -118,6 +118,7 @@ Task components:
 - Emotional Stroop: `emotional-stroop-trial` (runs through the same plugin as Stroop, forced `response_mode: "color_naming"`)
 - Simon: `simon-trial`
 - PVT: `pvt-trial`
+- Task Switching: `task-switching-trial`
 - N-back: `nback-block` (compiled by trial-based or continuous N-back plugins depending on config defaults)
 - SOC Dashboard: `soc-dashboard` with `subtasks[]` types `sart-like`, `nback-like`, `flanker-like`, `wcst-like`, `pvt-like`
 
@@ -125,6 +126,62 @@ Emotional Stroop notes:
 
 - Builder exports top-level defaults under `emotional_stroop_settings` (including `word_lists` / `word_options` and the shared Stroop ink `stimuli`).
 - During Block expansion, the compiler couples list selection to word selection so the per-trial metadata `word_list_label` / `word_list_index` stays coherent.
+
+## Task Switching
+
+Task Switching runs via a custom jsPsych plugin (loaded as `window.jsPsychTaskSwitching`).
+
+### Defaults (`task_switching_settings`)
+
+Builder exports Task Switching experiment-wide defaults under:
+
+```json
+{
+  "task_switching_settings": {
+    "stimulus_set_mode": "letters_numbers",
+    "stimulus_position": "top",
+    "border_enabled": false,
+    "left_key": "f",
+    "right_key": "j",
+
+    "cue_type": "explicit",
+    "task_1_cue_text": "LETTERS",
+    "task_2_cue_text": "NUMBERS",
+    "cue_font_size_px": 28,
+    "cue_duration_ms": 0,
+    "cue_gap_ms": 0,
+    "cue_color_hex": "#FFFFFF",
+
+    "task_1_position": "left",
+    "task_2_position": "right",
+    "task_1_color_hex": "#FFFFFF",
+    "task_2_color_hex": "#FFFFFF",
+
+    "tasks": [
+      { "category_a_tokens": [], "category_b_tokens": [] },
+      { "category_a_tokens": [], "category_b_tokens": [] }
+    ]
+  }
+}
+```
+
+Notes:
+
+- `stimulus_set_mode: "letters_numbers"` uses built-in scoring:
+  - Task 1 (letters): vowel vs consonant
+  - Task 2 (numbers): odd vs even
+- `stimulus_set_mode: "custom"` uses `tasks[0]` and `tasks[1]` token sets.
+
+### Trial behavior
+
+- The compiled Task Switching trial displays a **combined stimulus** (task-1 token + task-2 token, e.g. `A 2`) on every trial.
+- Correctness uses the **task-relevant token**:
+  - letters task scores `stimulus_task_1`
+  - numbers task scores `stimulus_task_2`
+- Cueing modes:
+  - `explicit`: shows `task_1_cue_text` / `task_2_cue_text` (and timing/color fields)
+  - `position`: stimulus position varies by task via `task_1_position` / `task_2_position`
+  - `color`: stimulus color varies by task via `task_1_color_hex` / `task_2_color_hex`
 
 ## How it loads configs
 

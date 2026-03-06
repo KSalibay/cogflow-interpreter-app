@@ -2172,6 +2172,20 @@
         return '';
       };
 
+      const normalizeTokenStoreBaseUrl = (raw) => {
+        let s = (raw === null || raw === undefined) ? '' : String(raw).trim();
+        s = s.replace(/\/+$/, '');
+
+        // Common copy/paste mistakes: people paste the API path or a specific config URL.
+        // Normalize these back to the worker base.
+        const m = /^(https?:\/\/[^?#]+?)\/v1\/configs\/[^/]+$/i.exec(s);
+        if (m) return m[1];
+        s = s.replace(/\/v1\/configs$/i, '');
+        s = s.replace(/\/v1$/i, '');
+        s = s.replace(/\/+$/, '');
+        return s;
+      };
+
       const baseUrlRaw = pickFirst(
         getJatosParam('config_store_base_url'),
         getJatosParam('token_store_base_url'),
@@ -2180,7 +2194,7 @@
         (typeof window !== 'undefined' && typeof window.COGFLOW_TOKEN_STORE_BASE_URL === 'string') ? window.COGFLOW_TOKEN_STORE_BASE_URL : ''
       );
 
-      const baseUrl = baseUrlRaw.replace(/\/+$/, '');
+      const baseUrl = normalizeTokenStoreBaseUrl(baseUrlRaw);
 
       // Optional: multi-config mode (JATOS-first). Accept either:
       // - config_store_configs: array/object in Component Properties, OR
@@ -2321,7 +2335,7 @@
                 'Authorization': `Bearer ${e.read_token}`
               }
             });
-            if (!res.ok) throw new Error(`Token store fetch failed (${res.status})`);
+            if (!res.ok) throw new Error(`Token store fetch failed (${res.status}) at ${url}`);
             const cfg = await res.json();
             try {
               if (cfg && typeof cfg === 'object') cfg.__source_url = url;
@@ -2378,7 +2392,7 @@
         });
 
         if (!res.ok) {
-          throw new Error(`Token store fetch failed (${res.status})`);
+          throw new Error(`Token store fetch failed (${res.status}) at ${url}`);
         }
 
         const cfg = await res.json();

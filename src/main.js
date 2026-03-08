@@ -701,6 +701,7 @@
       ['window.jsPsychGabor', window.jsPsychGabor],
       ['window.jsPsychFlanker', window.jsPsychFlanker],
       ['window.jsPsychSart', window.jsPsychSart],
+      ['window.jsPsychContinuousImagePresentation', window.jsPsychContinuousImagePresentation],
       ['window.jsPsychSurveyResponse', window.jsPsychSurveyResponse]
     ];
 
@@ -1089,13 +1090,20 @@
   // Make silent failures visible (especially in local static hosting).
   try {
     window.addEventListener('error', (e) => {
-      const m = (e && e.message) ? e.message : 'Unknown error';
+      const errObj = (e && e.error) ? e.error : null;
+      const m = (e && e.message)
+        ? e.message
+        : ((errObj && errObj.message) ? errObj.message : 'Unknown error');
+      const stack = (errObj && errObj.stack) ? String(errObj.stack) : null;
       setStatus(`Runtime error: ${m}`);
+      renderBlockingStatus('Runtime error', stack ? `${m}\n\n${stack}` : m);
     });
     window.addEventListener('unhandledrejection', (e) => {
       const r = e && e.reason;
       const m = (r && r.message) ? r.message : String(r || 'Unhandled promise rejection');
+      const stack = (r && r.stack) ? String(r.stack) : null;
       setStatus(`Unhandled rejection: ${m}`);
+      renderBlockingStatus('Unhandled rejection', stack ? `${m}\n\n${stack}` : m);
     });
   } catch {
     // ignore
@@ -1544,6 +1552,60 @@
       }
 
       compiled = window.TimelineCompiler.compileToJsPsychTimeline(config);
+    }
+
+    // Sanity-check: if config contains CIP blocks but compilation produced zero CIP trials,
+    // the study can appear to "end" right after instructions. Surface a clear diagnostic.
+    try {
+      const pluginCounts = (() => {
+        const counts = {};
+        for (const t of (Array.isArray(compiled.timeline) ? compiled.timeline : [])) {
+          const pt = (t && t.data && typeof t.data === 'object') ? t.data.plugin_type : null;
+          const k = pt ? String(pt) : '(missing plugin_type)';
+          counts[k] = (counts[k] || 0) + 1;
+        }
+        return counts;
+      })();
+
+      const cipTrialCount = Number(pluginCounts['continuous-image-presentation'] || 0);
+      const hasCipBlocks = (() => {
+        try {
+          const seen = new Set();
+          const stack = [config];
+          while (stack.length) {
+            const cur = stack.pop();
+            if (!cur || typeof cur !== 'object') continue;
+            if (seen.has(cur)) continue;
+            seen.add(cur);
+            const t = (cur.block_component_type ?? cur.type ?? '').toString().trim().toLowerCase();
+            if (t === 'continuous-image-presentation') return true;
+            for (const v of Object.values(cur)) stack.push(v);
+          }
+        } catch {
+          // ignore
+        }
+        return false;
+      })();
+
+      if (hasCipBlocks && cipTrialCount === 0) {
+        const diag = {
+          config_id: configId || null,
+          source_url: (config && typeof config === 'object') ? (config.__source_url ?? null) : null,
+          plugin_counts: pluginCounts
+        };
+        console.error('[Interpreter] CIP compile issue: config contains CIP blocks, but compiled timeline has 0 CIP trials.', diag);
+
+        const msg =
+          'Config contains Continuous Image Presentation blocks, but compiled timeline has 0 CIP trials.\n' +
+          'Most common cause: the CIP block is missing/empty cip_image_urls because assets were not generated/applied in the Builder before export.\n\n' +
+          JSON.stringify(diag, null, 2);
+
+        setStatus('CIP compile issue: 0 CIP trials.');
+        renderBlockingStatus('Interpreter error', msg);
+        return;
+      }
+    } catch {
+      // ignore
     }
 
     setStatus(`Compiled timeline: ${compiled.timeline.length} items (${compiled.experimentType}). Starting...`);
@@ -2382,6 +2444,8 @@
         renderBlockingStatus('Loading', 'Loading config from token store...');
       }
 
+      let cfg = null;
+
       try {
         const res = await fetch(url, {
           method: 'GET',
@@ -2395,7 +2459,7 @@
           throw new Error(`Token store fetch failed (${res.status}) at ${url}`);
         }
 
-        const cfg = await res.json();
+        cfg = await res.json();
         try {
           if (cfg && typeof cfg === 'object') {
             cfg.__source_url = url;
@@ -2403,13 +2467,21 @@
         } catch {
           // ignore
         }
-
-        await startExperiment(cfg, configId);
-        return true;
       } catch (e) {
         console.error('Token store load failed:', e);
         setStatus(`Token store load failed: ${e && e.message ? e.message : String(e)}`);
         renderBlockingStatus('Token store load failed', e && e.message ? e.message : String(e));
+        return true;
+      }
+
+      try {
+        await startExperiment(cfg, configId);
+        return true;
+      } catch (e) {
+        console.error('Interpreter error after token-store load:', e);
+        const msg = e && e.message ? e.message : String(e);
+        setStatus(`Interpreter error: ${msg}`);
+        renderBlockingStatus('Interpreter error', msg);
         return true;
       }
     }
@@ -2527,7 +2599,9 @@
           })
           .catch((e) => {
             console.error(e);
-            setStatus(e && e.message ? e.message : String(e));
+            const msg = e && e.message ? e.message : String(e);
+            setStatus(msg);
+            renderBlockingStatus('Interpreter error', msg);
           });
         return;
       }
@@ -2546,7 +2620,9 @@
         })
         .catch((e) => {
           console.error(e);
-          setStatus(e && e.message ? e.message : String(e));
+          const msg = e && e.message ? e.message : String(e);
+          setStatus(msg);
+          renderBlockingStatus('Interpreter error', msg);
         });
     } else {
       if (inJatos) {

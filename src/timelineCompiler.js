@@ -425,6 +425,156 @@
       }
     }
 
+    // Continuous Image Presentation: treat Block as the generator.
+    // Builder stores the resolved URLs directly in block.parameter_values so the interpreter does not
+    // need to query the Token Store at runtime.
+    if (baseType === 'continuous-image-presentation') {
+      const src = (block && typeof block === 'object' && block.parameter_values && typeof block.parameter_values === 'object')
+        ? { ...block, ...block.parameter_values }
+        : (block || {});
+
+      const parseStringList = (raw) => {
+        const s = (raw === undefined || raw === null) ? '' : String(raw);
+        return s
+          .split(/\r?\n|,/g)
+          .map(x => x.trim())
+          .filter(Boolean);
+      };
+
+      const imageUrls = parseStringList(src.cip_image_urls);
+      const filenames = parseStringList(src.cip_asset_filenames);
+      const m2iUrls = parseStringList(src.cip_mask_to_image_sprite_urls);
+      const i2mUrls = parseStringList(src.cip_image_to_mask_sprite_urls);
+
+      if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
+        const diag = {
+          block_component_type: (block && typeof block === 'object') ? (block.block_component_type ?? null) : null,
+          cip_asset_code: src.cip_asset_code ?? null,
+          cip_mask_type: src.cip_mask_type ?? null,
+          cip_mask_block_size: src.cip_mask_block_size ?? null,
+          cip_mask_noise_amp: src.cip_mask_noise_amp ?? null,
+          cip_images_per_block: src.cip_images_per_block ?? null,
+          cip_asset_filenames_count: Array.isArray(filenames) ? filenames.length : null,
+          cip_mask_to_image_sprite_urls_count: Array.isArray(m2iUrls) ? m2iUrls.length : null,
+          cip_image_to_mask_sprite_urls_count: Array.isArray(i2mUrls) ? i2mUrls.length : null
+        };
+
+        console.error('[TimelineCompiler] CIP block has no images (cip_image_urls empty). Diagnostics:', diag);
+        throw new Error(
+          'Continuous Image Presentation block is missing image URLs (cip_image_urls is empty). ' +
+          'This usually means CIP assets were not generated/applied in the Builder before export.'
+        );
+      }
+
+      const requestedCount = (() => {
+        const n = Number.parseInt(src.cip_images_per_block, 10);
+        if (Number.isFinite(n) && n > 0) return n;
+        return length;
+      })();
+
+      if (!Number.isFinite(requestedCount) || requestedCount <= 0) {
+        const diag = {
+          block_component_type: (block && typeof block === 'object') ? (block.block_component_type ?? null) : null,
+          block_length: Number.isFinite(length) ? length : null,
+          cip_images_per_block: src.cip_images_per_block ?? null,
+          cip_image_urls_count: Array.isArray(imageUrls) ? imageUrls.length : null
+        };
+        console.error('[TimelineCompiler] CIP block expanded to 0 trials (requestedCount <= 0). Diagnostics:', diag);
+        throw new Error(
+          'Continuous Image Presentation block would generate 0 trials (cip_images_per_block / block length resolves to 0).'
+        );
+      }
+
+      const repeatMode = (src.cip_repeat_mode ?? 'no_repeats').toString().trim().toLowerCase();
+      const repeatToFill = repeatMode === 'repeat_to_fill';
+
+      const seedParsed = Number.parseInt((block.seed ?? src.seed ?? '').toString(), 10);
+      const seed = Number.isFinite(seedParsed) ? (seedParsed >>> 0) : null;
+      const rng = seed === null ? Math.random : mulberry32(seed);
+
+      const shuffleInPlace = (arr) => {
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(rng() * (i + 1));
+          const tmp = arr[i];
+          arr[i] = arr[j];
+          arr[j] = tmp;
+        }
+        return arr;
+      };
+
+      const baseIndices = Array.from({ length: imageUrls.length }, (_, i) => i);
+      const chosenIndices = [];
+      if (!repeatToFill) {
+        const shuffled = shuffleInPlace(baseIndices.slice());
+        const n = Math.min(requestedCount, shuffled.length);
+        for (let i = 0; i < n; i++) chosenIndices.push(shuffled[i]);
+      } else {
+        while (chosenIndices.length < requestedCount) {
+          const cycle = shuffleInPlace(baseIndices.slice());
+          for (const idx of cycle) {
+            chosenIndices.push(idx);
+            if (chosenIndices.length >= requestedCount) break;
+          }
+        }
+      }
+
+      if (chosenIndices.length === 0) {
+        const diag = {
+          requestedCount,
+          repeatMode,
+          cip_image_urls_count: Array.isArray(imageUrls) ? imageUrls.length : null
+        };
+        console.error('[TimelineCompiler] CIP block expanded to 0 trials (chosenIndices empty). Diagnostics:', diag);
+        throw new Error('Continuous Image Presentation block expanded to 0 trials (no images selected).');
+      }
+
+      const transitionFrames = (() => {
+        const n = Number.parseInt(src.cip_transition_frames, 10);
+        if (Number.isFinite(n) && n > 0) return n;
+        return 8;
+      })();
+
+      const imageDurationMs = (() => {
+        const n = Number.parseInt(src.cip_image_duration_ms, 10);
+        if (Number.isFinite(n) && n >= 0) return n;
+        return 750;
+      })();
+
+      const transitionDurationMs = (() => {
+        const n = Number.parseInt(src.cip_transition_duration_ms, 10);
+        if (Number.isFinite(n) && n >= 0) return n;
+        return 200;
+      })();
+
+      const choiceKeysRaw = (src.cip_choice_keys ?? src.choices ?? 'f,j').toString();
+      const choices = choiceKeysRaw
+        .split(/[\n,]/g)
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(s => (s.length === 1 ? s.toLowerCase() : s));
+
+      const out = [];
+      for (let i = 0; i < chosenIndices.length; i++) {
+        const idx = chosenIndices[i];
+        out.push({
+          type: 'continuous-image-presentation',
+          image_url: imageUrls[idx] || '',
+          asset_filename: filenames[idx] || '',
+          mask_to_image_sprite_url: m2iUrls[idx] || null,
+          image_to_mask_sprite_url: i2mUrls[idx] || null,
+          transition_frames: transitionFrames,
+          image_duration_ms: imageDurationMs,
+          transition_duration_ms: transitionDurationMs,
+          choices,
+          _generated_from_block: true,
+          _block_index: i,
+          _block_source_index: idx
+        });
+      }
+
+      return out;
+    }
+
     const seedParsed = Number.parseInt((block.seed ?? '').toString(), 10);
     const seed = Number.isFinite(seedParsed) ? (seedParsed >>> 0) : null;
     const rng = seed === null ? Math.random : mulberry32(seed);
@@ -2448,6 +2598,33 @@
           ...(onFinish ? { on_finish: onFinish } : {}),
           data: { plugin_type: type, task_type: 'sart' }
         };
+        timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
+        continue;
+      }
+
+      // Continuous Image Presentation (one data row per image)
+      if (type === 'continuous-image-presentation') {
+        const Cip = requirePlugin(
+          'continuous-image-presentation (window.jsPsychContinuousImagePresentation)',
+          window.jsPsychContinuousImagePresentation
+        );
+        const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, type);
+
+        const trial = {
+          ...item,
+          type: Cip,
+          ...(onFinish ? { on_finish: onFinish } : {}),
+          data: {
+            plugin_type: type,
+            task_type: 'continuous-image',
+            stimulus_image_url: item.image_url ?? null,
+            stimulus_filename: item.asset_filename ?? null,
+            _generated_from_block: !!item._generated_from_block,
+            _block_index: Number.isFinite(item._block_index) ? item._block_index : null,
+            _block_source_index: Number.isFinite(item._block_source_index) ? item._block_source_index : null
+          }
+        };
+
         timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
         continue;
       }

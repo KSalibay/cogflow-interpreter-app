@@ -37,8 +37,7 @@
     data: {
       response_key: { type: PT.STRING },
       rt_ms: { type: PT.INT },
-      accuracy: { type: PT.FLOAT },
-      correctness: { type: PT.BOOL },
+      correct: { type: PT.BOOL },
       ended_reason: { type: PT.STRING },
       plugin_version: { type: PT.STRING }
     }
@@ -103,9 +102,9 @@
         : '';
 
       display_element.innerHTML = `
-        <div id="sart-wrap" style="position:relative; width:100%; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px;">
+        <div id="sart-wrap" style="position:relative; width:100%; min-height:100vh; padding:24px 12px; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; text-align:center;">
           ${fixationHtml}
-          <div id="sart-stim" style="font-size:72px; font-weight:800;">${esc(String(digit))}</div>
+          <div id="sart-stim" style="font-size:72px; font-weight:800; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-variant-numeric: tabular-nums;">${esc(String(digit))}</div>
           <div style="opacity:0.65; font-size: 12px;">Press ${esc(goKey === ' ' ? 'space' : goKey)} for GO (do not press for ${esc(String(nogoDigit))})</div>
         </div>
       `;
@@ -135,14 +134,13 @@
 
         this.jsPsych.finishTrial({
           plugin_type: 'sart-trial',
-          end_reason: reason || (responded ? 'response' : 'deadline'),
+          plugin_version: info.version,
+          ended_reason: reason || (responded ? 'response' : 'deadline'),
           digit,
           nogo_digit: nogoDigit,
           is_nogo: isNoGo,
           response_key: responseKey,
           correct,
-          accuracy: correct,
-          correctness: correct,
           rt_ms: rt,
           ...(drtEnabled ? { drt_enabled: true, drt_shown: drtShown, drt_rt_ms: drtRt } : {})
         });
@@ -161,9 +159,10 @@
           if (k !== goKey) return;
         }
 
-        if (responded) return;
+        // Only treat the configured GO key as a response. Other keys are ignored.
+        if (k !== goKey) return;
 
-        // Record *any* (non-DRT) key as a response so we can detect wrong-key presses.
+        if (responded) return;
         responded = true;
         responseKey = k;
         rt = Number.isFinite(info && info.rt) ? Math.round(info.rt) : null;
@@ -207,9 +206,14 @@
       }
 
       // Keyboard response
+      const validKeys = Array.from(new Set([
+        ...expandKeyVariants(goKey).map(normalizeKeyName),
+        ...(drtEnabled && drtKey !== goKey ? expandKeyVariants(drtKey).map(normalizeKeyName) : [])
+      ]));
+
       this.jsPsych.pluginAPI.getKeyboardResponse({
         callback_function: afterResponse,
-        valid_responses: 'ALL_KEYS',
+        valid_responses: validKeys,
         rt_method: 'performance',
         persist: true,
         allow_held_key: false

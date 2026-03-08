@@ -290,7 +290,9 @@
         itemResponseKey = null;
         itemRt = null;
         itemResponded = false;
-        clearFeedback();
+        // Do not clear feedback here.
+        // Feedback is shown at the end of each item and (when enabled) is responsible for
+        // clearing itself before the next item begins.
 
         if (progressEl) {
           progressEl.textContent = `Item ${idx + 1} / ${length} · ${isMatch[idx] ? 'MATCH' : 'NO MATCH'}`;
@@ -329,18 +331,26 @@
             correctness
           });
 
+          const next = idx + 1;
+          const advance = () => {
+            clearFeedback();
+            if (next >= length) {
+              endTrial();
+            } else {
+              showItem(next);
+            }
+          };
+
           if (showFeedback && feedbackEl && feedbackMs > 0) {
             feedbackEl.textContent = correctness ? 'Correct' : 'Incorrect';
             feedbackEl.style.color = correctness ? '#86efac' : '#fca5a5';
-            this.jsPsych.pluginAPI.setTimeout(() => clearFeedback(), feedbackMs);
+            this.jsPsych.pluginAPI.setTimeout(() => {
+              advance();
+            }, feedbackMs);
+            return;
           }
 
-          const next = idx + 1;
-          if (next >= length) {
-            endTrial();
-          } else {
-            showItem(next);
-          }
+          advance();
         }, Math.max(1, cadenceMs));
       };
 

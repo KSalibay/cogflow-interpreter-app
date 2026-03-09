@@ -164,13 +164,15 @@
           const step = Number.isFinite(Number(q.step)) ? Number(q.step) : 1;
           const minLabel = esc(q.min_label ?? String(min));
           const maxLabel = esc(q.max_label ?? String(max));
+          const initValue = Number.isFinite(Number(q.value)) ? Number(q.value) : min;
 
           return `
             <div class="sr-q" style="margin: 14px 0;">
               <div style="font-weight:600; margin-bottom:6px;">${prompt} ${requiredMark}</div>
               <div style="display:flex; gap:10px; align-items:center;">
                 <span style="opacity:0.8; min-width: 32px;">${minLabel}</span>
-                <input type="range" name="${esc(id)}" min="${min}" max="${max}" step="${step}" value="${min}" style="flex:1;" ${required ? 'required' : ''} />
+                <input type="range" name="${esc(id)}" min="${min}" max="${max}" step="${step}" value="${initValue}" style="flex:1;" ${required ? 'required' : ''} />
+                <span class="sr-slider-value" data-slider-for="${esc(id)}" style="opacity:0.85; min-width: 44px; text-align:right; font-variant-numeric: tabular-nums;">${esc(initValue)}</span>
                 <span style="opacity:0.8; min-width: 32px; text-align:right;">${maxLabel}</span>
               </div>
             </div>
@@ -238,7 +240,8 @@
 
         this.jsPsych.finishTrial({
           plugin_type: 'survey-response',
-          end_reason: reason || 'submit',
+          plugin_version: info.version,
+          ended_reason: reason || 'submit',
           rt_ms: Math.round(nowMs() - startTs),
           responses
         });
@@ -261,6 +264,27 @@
       };
 
       formEl.addEventListener('submit', onSubmit);
+
+      // Slider live value labels
+      try {
+        const sliders = display_element.querySelectorAll('input[type="range"][name]');
+        sliders.forEach((sliderEl) => {
+          const name = sliderEl.getAttribute('name') || '';
+          if (!name) return;
+          const labelEl = display_element.querySelector(`.sr-slider-value[data-slider-for="${CSS.escape(name)}"]`);
+          if (!labelEl) return;
+
+          const sync = () => {
+            labelEl.textContent = String(sliderEl.value);
+          };
+
+          sliderEl.addEventListener('input', sync);
+          sliderEl.addEventListener('change', sync);
+          sync();
+        });
+      } catch {
+        // ignore
+      }
 
       // Timeout handling
       if (Number.isFinite(timeoutMs) && timeoutMs > 0) {

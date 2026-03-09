@@ -128,6 +128,55 @@
       align-items: center !important;
       justify-content: center !important;
     }
+
+    /* Generic centered stage for instruction-like screens (used by several CogFlow plugins) */
+    .psy-wrap {
+      width: 100%;
+      min-height: 100vh;
+      min-height: 100svh;
+      min-height: 100dvh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--psy-bg);
+      color: var(--psy-fg);
+    }
+    .psy-stage {
+      width: 100%;
+      padding: clamp(18px, 3vw, 32px);
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .psy-text {
+      width: min(900px, 100%);
+      text-align: left;
+      line-height: 1.5;
+      font-size: 16px;
+    }
+    .psy-muted {
+      opacity: 0.78;
+    }
+    .psy-btn-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-top: 16px;
+    }
+    .psy-btn {
+      padding: 10px 14px;
+      border-radius: 10px;
+      border: 1px solid var(--psy-border);
+      background: transparent;
+      color: inherit;
+      cursor: pointer;
+    }
+    .psy-btn-primary {
+      background: var(--psy-accent);
+      border-color: rgba(0, 0, 0, 0.0);
+      color: var(--cf-ash-grey);
+    }
   </style>
 </head>
 <body>
@@ -179,6 +228,7 @@
   <!-- jsPsych core + plugins (browser/UMD builds) -->
   <script src="https://unpkg.com/jspsych@8.2.3/dist/index.browser.min.js"></script>
   <script src="https://unpkg.com/@jspsych/plugin-html-keyboard-response@2.1.0/dist/index.browser.min.js"></script>
+  <script src="https://unpkg.com/@jspsych/plugin-html-button-response@2/dist/index.browser.min.js"></script>
 
   <!-- Interpreter runtime -->
   <script>
@@ -217,9 +267,11 @@
         'src/jspsych-survey-response.js?v=20260207',
         'src/jspsych-flanker.js?v=20260207',
         'src/jspsych-sart.js?v=20260207',
+        'src/jspsych-continuous-image-presentation.js?v=20260307-1',
         'src/jspsych-gabor.js?v=20260224b',
-        'src/jspsych-stroop.js?v=20260218d',
+        'src/jspsych-stroop.js?v=20260305-1',
         'src/jspsych-simon.js?v=20260218',
+        'src/jspsych-task-switching.js?v=20260306-3',
         'src/jspsych-pvt.js?v=20260219',
         'src/jspsych-nback.js?v=20260222',
         'src/jspsych-nback-continuous.js?v=20260222',
@@ -227,8 +279,8 @@
         'src/jspsych-soc-dashboard.js?v=20260224a',
         'src/eyeTrackingWebgazer.js?v=20260207',
         'src/configLoader.js?v=20260207',
-        'src/timelineCompiler.js?v=20260224d',
-        'src/main.js?v=20260224-1'
+        'src/timelineCompiler.js?v=20260305-2',
+        'src/main.js?v=20260309-1'
       ];
 
       const candidates = [];

@@ -144,6 +144,109 @@
     }
   }
 
+  function collectCipAssetUrlsFromTimeline(jsPsychTimeline) {
+    const timeline = Array.isArray(jsPsychTimeline) ? jsPsychTimeline : [];
+    const urls = new Set();
+
+    const maybeAdd = (raw) => {
+      const s = (raw === undefined || raw === null) ? '' : String(raw).trim();
+      if (!s) return;
+      const lower = s.toLowerCase();
+      if (lower === 'none' || lower === 'null' || lower === 'undefined') return;
+      // Accept absolute URLs, root-relative paths (e.g. /publix/..), relative paths, and data URLs.
+      if (!/^(https?:\/\/|\/|\.?\.\/|data:image\/)/i.test(s)) return;
+      urls.add(s);
+    };
+
+    for (const t of timeline) {
+      const pluginType = (t && t.data && typeof t.data === 'object') ? t.data.plugin_type : null;
+      if (pluginType !== 'continuous-image-presentation') continue;
+      maybeAdd(t.image_url);
+      maybeAdd(t.mask_to_image_sprite_url);
+      maybeAdd(t.image_to_mask_sprite_url);
+
+      // Back-compat / alternative key names (defensive)
+      maybeAdd(t.stimulus_image_url);
+      maybeAdd(t.maskToImageSpriteUrl);
+      maybeAdd(t.imageToMaskSpriteUrl);
+    }
+
+    return Array.from(urls);
+  }
+
+  function preloadImageUrl(url, { timeoutMs = 20000 } = {}) {
+    return new Promise((resolve) => {
+      const u = (url === undefined || url === null) ? '' : String(url).trim();
+      if (!u) return resolve({ ok: false, url: u, reason: 'empty_url' });
+
+      let done = false;
+      const finish = (ok, reason) => {
+        if (done) return;
+        done = true;
+        try {
+          if (timer) clearTimeout(timer);
+        } catch {
+          // ignore
+        }
+        resolve({ ok: !!ok, url: u, reason: reason || null });
+      };
+
+      let timer = null;
+      try {
+        timer = setTimeout(() => finish(false, 'timeout'), Math.max(0, Number(timeoutMs) || 0));
+      } catch {
+        timer = null;
+      }
+
+      try {
+        const img = new Image();
+        // Prefer anonymous CORS so the plugin can draw into canvas when the server permits it.
+        // If the server doesn't send CORS headers, the onerror path will handle it.
+        try { img.crossOrigin = 'anonymous'; } catch { /* ignore */ }
+        img.onload = () => finish(true, null);
+        img.onerror = () => finish(false, 'error');
+        img.src = u;
+      } catch {
+        finish(false, 'exception');
+      }
+    });
+  }
+
+  async function preloadImageUrls(urls, {
+    concurrency = 6,
+    timeoutMs = 20000,
+    onProgress = null
+  } = {}) {
+    const list = Array.isArray(urls) ? urls.filter(Boolean) : [];
+    if (list.length === 0) return { ok: true, total: 0, loaded: 0, failed: 0 };
+
+    const limit = Math.max(1, Math.min(12, Number(concurrency) || 6));
+    let idx = 0;
+    let loaded = 0;
+    let failed = 0;
+
+    const worker = async () => {
+      while (true) {
+        const i = idx;
+        idx += 1;
+        if (i >= list.length) return;
+        const res = await preloadImageUrl(list[i], { timeoutMs });
+        if (res && res.ok) loaded += 1;
+        else failed += 1;
+        try {
+          if (typeof onProgress === 'function') onProgress({ done: loaded + failed, total: list.length, loaded, failed });
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    const workers = [];
+    for (let i = 0; i < Math.min(limit, list.length); i++) workers.push(worker());
+    await Promise.all(workers);
+    return { ok: failed === 0, total: list.length, loaded, failed };
+  }
+
   function listJatosTokenStoreKeys() {
     const interesting = (k) => {
       const s = (k ?? '').toString().toLowerCase();
@@ -701,6 +804,7 @@
       ['window.jsPsychGabor', window.jsPsychGabor],
       ['window.jsPsychFlanker', window.jsPsychFlanker],
       ['window.jsPsychSart', window.jsPsychSart],
+      ['window.jsPsychContinuousImagePresentation', window.jsPsychContinuousImagePresentation],
       ['window.jsPsychSurveyResponse', window.jsPsychSurveyResponse]
     ];
 
@@ -1089,13 +1193,20 @@
   // Make silent failures visible (especially in local static hosting).
   try {
     window.addEventListener('error', (e) => {
-      const m = (e && e.message) ? e.message : 'Unknown error';
+      const errObj = (e && e.error) ? e.error : null;
+      const m = (e && e.message)
+        ? e.message
+        : ((errObj && errObj.message) ? errObj.message : 'Unknown error');
+      const stack = (errObj && errObj.stack) ? String(errObj.stack) : null;
       setStatus(`Runtime error: ${m}`);
+      renderBlockingStatus('Runtime error', stack ? `${m}\n\n${stack}` : m);
     });
     window.addEventListener('unhandledrejection', (e) => {
       const r = e && e.reason;
       const m = (r && r.message) ? r.message : String(r || 'Unhandled promise rejection');
+      const stack = (r && r.stack) ? String(r.stack) : null;
       setStatus(`Unhandled rejection: ${m}`);
+      renderBlockingStatus('Unhandled rejection', stack ? `${m}\n\n${stack}` : m);
     });
   } catch {
     // ignore
@@ -1544,6 +1655,88 @@
       }
 
       compiled = window.TimelineCompiler.compileToJsPsychTimeline(config);
+    }
+
+    // Sanity-check: if config contains CIP blocks but compilation produced zero CIP trials,
+    // the study can appear to "end" right after instructions. Surface a clear diagnostic.
+    try {
+      const pluginCounts = (() => {
+        const counts = {};
+        for (const t of (Array.isArray(compiled.timeline) ? compiled.timeline : [])) {
+          const pt = (t && t.data && typeof t.data === 'object') ? t.data.plugin_type : null;
+          const k = pt ? String(pt) : '(missing plugin_type)';
+          counts[k] = (counts[k] || 0) + 1;
+        }
+        return counts;
+      })();
+
+      const cipTrialCount = Number(pluginCounts['continuous-image-presentation'] || 0);
+      const hasCipBlocks = (() => {
+        try {
+          const seen = new Set();
+          const stack = [config];
+          while (stack.length) {
+            const cur = stack.pop();
+            if (!cur || typeof cur !== 'object') continue;
+            if (seen.has(cur)) continue;
+            seen.add(cur);
+            const t = (cur.block_component_type ?? cur.type ?? '').toString().trim().toLowerCase();
+            if (t === 'continuous-image-presentation') return true;
+            for (const v of Object.values(cur)) stack.push(v);
+          }
+        } catch {
+          // ignore
+        }
+        return false;
+      })();
+
+      if (hasCipBlocks && cipTrialCount === 0) {
+        const diag = {
+          config_id: configId || null,
+          source_url: (config && typeof config === 'object') ? (config.__source_url ?? null) : null,
+          plugin_counts: pluginCounts
+        };
+        console.error('[Interpreter] CIP compile issue: config contains CIP blocks, but compiled timeline has 0 CIP trials.', diag);
+
+        const msg =
+          'Config contains Continuous Image Presentation blocks, but compiled timeline has 0 CIP trials.\n' +
+          'Most common cause: the CIP block is missing/empty cip_image_urls because assets were not generated/applied in the Builder before export.\n\n' +
+          JSON.stringify(diag, null, 2);
+
+        setStatus('CIP compile issue: 0 CIP trials.');
+        renderBlockingStatus('Interpreter error', msg);
+        return;
+      }
+    } catch {
+      // ignore
+    }
+
+    // Preload CIP assets (images + transition sprites) before starting.
+    // This prevents the CIP plugin from falling back to placeholder behavior while assets stream in.
+    try {
+      const cipUrls = collectCipAssetUrlsFromTimeline(compiled.timeline);
+      if (cipUrls.length > 0) {
+        renderBlockingStatus('Loading', 'Experiment loading, please wait...');
+
+        let lastTick = 0;
+        const res = await preloadImageUrls(cipUrls, {
+          concurrency: 6,
+          timeoutMs: 25000,
+          onProgress: ({ done, total }) => {
+            // Avoid over-rendering the splash; update at most a few times per second.
+            const now = Date.now();
+            if (now - lastTick < 250 && done < total) return;
+            lastTick = now;
+            renderBlockingStatus('Loading', `Experiment loading, please wait... (${done}/${total})`);
+          }
+        });
+
+        if (res && res.failed > 0) {
+          console.warn('[Interpreter] CIP asset preload had failures:', res);
+        }
+      }
+    } catch (e) {
+      console.warn('[Interpreter] CIP asset preload failed (continuing anyway):', e);
     }
 
     setStatus(`Compiled timeline: ${compiled.timeline.length} items (${compiled.experimentType}). Starting...`);
@@ -2172,6 +2365,20 @@
         return '';
       };
 
+      const normalizeTokenStoreBaseUrl = (raw) => {
+        let s = (raw === null || raw === undefined) ? '' : String(raw).trim();
+        s = s.replace(/\/+$/, '');
+
+        // Common copy/paste mistakes: people paste the API path or a specific config URL.
+        // Normalize these back to the worker base.
+        const m = /^(https?:\/\/[^?#]+?)\/v1\/configs\/[^/]+$/i.exec(s);
+        if (m) return m[1];
+        s = s.replace(/\/v1\/configs$/i, '');
+        s = s.replace(/\/v1$/i, '');
+        s = s.replace(/\/+$/, '');
+        return s;
+      };
+
       const baseUrlRaw = pickFirst(
         getJatosParam('config_store_base_url'),
         getJatosParam('token_store_base_url'),
@@ -2180,7 +2387,7 @@
         (typeof window !== 'undefined' && typeof window.COGFLOW_TOKEN_STORE_BASE_URL === 'string') ? window.COGFLOW_TOKEN_STORE_BASE_URL : ''
       );
 
-      const baseUrl = baseUrlRaw.replace(/\/+$/, '');
+      const baseUrl = normalizeTokenStoreBaseUrl(baseUrlRaw);
 
       // Optional: multi-config mode (JATOS-first). Accept either:
       // - config_store_configs: array/object in Component Properties, OR
@@ -2321,7 +2528,7 @@
                 'Authorization': `Bearer ${e.read_token}`
               }
             });
-            if (!res.ok) throw new Error(`Token store fetch failed (${res.status})`);
+            if (!res.ok) throw new Error(`Token store fetch failed (${res.status}) at ${url}`);
             const cfg = await res.json();
             try {
               if (cfg && typeof cfg === 'object') cfg.__source_url = url;
@@ -2368,6 +2575,8 @@
         renderBlockingStatus('Loading', 'Loading config from token store...');
       }
 
+      let cfg = null;
+
       try {
         const res = await fetch(url, {
           method: 'GET',
@@ -2378,10 +2587,10 @@
         });
 
         if (!res.ok) {
-          throw new Error(`Token store fetch failed (${res.status})`);
+          throw new Error(`Token store fetch failed (${res.status}) at ${url}`);
         }
 
-        const cfg = await res.json();
+        cfg = await res.json();
         try {
           if (cfg && typeof cfg === 'object') {
             cfg.__source_url = url;
@@ -2389,13 +2598,21 @@
         } catch {
           // ignore
         }
-
-        await startExperiment(cfg, configId);
-        return true;
       } catch (e) {
         console.error('Token store load failed:', e);
         setStatus(`Token store load failed: ${e && e.message ? e.message : String(e)}`);
         renderBlockingStatus('Token store load failed', e && e.message ? e.message : String(e));
+        return true;
+      }
+
+      try {
+        await startExperiment(cfg, configId);
+        return true;
+      } catch (e) {
+        console.error('Interpreter error after token-store load:', e);
+        const msg = e && e.message ? e.message : String(e);
+        setStatus(`Interpreter error: ${msg}`);
+        renderBlockingStatus('Interpreter error', msg);
         return true;
       }
     }
@@ -2513,7 +2730,9 @@
           })
           .catch((e) => {
             console.error(e);
-            setStatus(e && e.message ? e.message : String(e));
+            const msg = e && e.message ? e.message : String(e);
+            setStatus(msg);
+            renderBlockingStatus('Interpreter error', msg);
           });
         return;
       }
@@ -2532,7 +2751,9 @@
         })
         .catch((e) => {
           console.error(e);
-          setStatus(e && e.message ? e.message : String(e));
+          const msg = e && e.message ? e.message : String(e);
+          setStatus(msg);
+          renderBlockingStatus('Interpreter error', msg);
         });
     } else {
       if (inJatos) {

@@ -189,10 +189,10 @@
           return;
         }
 
-        // Feedback screen (simple text; escaped). Keep it short to avoid changing ITI semantics.
+        // Feedback screen. Keep it short to avoid changing ITI semantics.
         display_element.innerHTML = `
           <div style="position:relative; width:100%; min-height:100vh; padding:24px 12px; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; text-align:center;">
-            <div style="max-width: 900px; font-size: 28px; line-height: 1.25; color: rgba(255,255,255,0.96); white-space: pre-wrap;">${esc(feedbackMessage)}</div>
+            <div style="max-width: 900px; font-size: 28px; line-height: 1.25; white-space: pre-wrap;">${feedbackMessage}</div>
           </div>
         `;
 
@@ -223,7 +223,7 @@
       };
 
       const wrapStyle = 'position:relative; width:100%; min-height:100vh; padding:24px 12px; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:18px; text-align:center;';
-      const timerStyle = 'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 96px; letter-spacing: 0.08em; font-weight: 700; color: rgba(255,255,255,0.96);';
+      const timerStyle = 'font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; font-size: 96px; letter-spacing: 0.08em; font-weight: 700;';
       const hintStyle = 'opacity:0.65; font-size: 12px;';
 
       const hintHtml = (() => {

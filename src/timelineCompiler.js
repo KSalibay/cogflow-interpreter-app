@@ -325,7 +325,8 @@
         : 'rdm-trial';
 
     // N-back: treat Block as the generator (Builder UX).
-    if (baseType === 'nback-block') {
+    // Support legacy `nback-block`, the public alias `nback`, and the older name `nback-trial-sequence`.
+    if (baseType === 'nback-block' || baseType === 'nback' || baseType === 'nback-trial-sequence') {
       const src = (block && typeof block === 'object' && block.parameter_values && typeof block.parameter_values === 'object')
         ? { ...block, ...block.parameter_values }
         : (block || {});
@@ -402,6 +403,191 @@
       return {};
     })();
     const values = isObject(block.parameter_values) ? { ...block.parameter_values } : {};
+
+    // Image list helper for image-keyboard-response Blocks.
+    // Builder can export a comma/newline-separated string under `stimulus_images`.
+    // We convert it into an array and feed it through the existing array-sampling path.
+    if (baseType === 'image-keyboard-response') {
+      const parseStringList = (raw) => {
+        const s = (raw === undefined || raw === null) ? '' : String(raw);
+        return s
+          .split(/\r?\n|,/g)
+          .map(x => x.trim())
+          .filter(Boolean);
+      };
+
+      if (typeof values.stimulus_images === 'string' && values.stimulus_images.trim() !== '') {
+        const list = parseStringList(values.stimulus_images);
+        if (list.length > 0) {
+          values.stimulus_image = list;
+        }
+        delete values.stimulus_images;
+      }
+    }
+
+    // Continuous Image Presentation: treat Block as the generator.
+    // Builder stores the resolved URLs directly in block.parameter_values so the interpreter does not
+    // need to query the Token Store at runtime.
+    if (baseType === 'continuous-image-presentation') {
+      const src = (block && typeof block === 'object' && block.parameter_values && typeof block.parameter_values === 'object')
+        ? { ...block, ...block.parameter_values }
+        : (block || {});
+
+      const parseStringList = (raw) => {
+        const s = (raw === undefined || raw === null) ? '' : String(raw);
+        return s
+          .split(/\r?\n|,/g)
+          .map(x => x.trim())
+          .filter(Boolean);
+      };
+
+      const imageUrls = parseStringList(src.cip_image_urls);
+      const filenames = parseStringList(src.cip_asset_filenames);
+      const m2iUrls = parseStringList(src.cip_mask_to_image_sprite_urls);
+      const i2mUrls = parseStringList(src.cip_image_to_mask_sprite_urls);
+
+      if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
+        const diag = {
+          block_component_type: (block && typeof block === 'object') ? (block.block_component_type ?? null) : null,
+          cip_asset_code: src.cip_asset_code ?? null,
+          cip_mask_type: src.cip_mask_type ?? null,
+          cip_mask_block_size: src.cip_mask_block_size ?? null,
+          cip_mask_noise_amp: src.cip_mask_noise_amp ?? null,
+          cip_images_per_block: src.cip_images_per_block ?? null,
+          cip_asset_filenames_count: Array.isArray(filenames) ? filenames.length : null,
+          cip_mask_to_image_sprite_urls_count: Array.isArray(m2iUrls) ? m2iUrls.length : null,
+          cip_image_to_mask_sprite_urls_count: Array.isArray(i2mUrls) ? i2mUrls.length : null
+        };
+
+        console.error('[TimelineCompiler] CIP block has no images (cip_image_urls empty). Diagnostics:', diag);
+        throw new Error(
+          'Continuous Image Presentation block is missing image URLs (cip_image_urls is empty). ' +
+          'This usually means CIP assets were not generated/applied in the Builder before export.'
+        );
+      }
+
+      const requestedCount = (() => {
+        const n = Number.parseInt(src.cip_images_per_block, 10);
+        if (Number.isFinite(n) && n > 0) return n;
+        return length;
+      })();
+
+      if (!Number.isFinite(requestedCount) || requestedCount <= 0) {
+        const diag = {
+          block_component_type: (block && typeof block === 'object') ? (block.block_component_type ?? null) : null,
+          block_length: Number.isFinite(length) ? length : null,
+          cip_images_per_block: src.cip_images_per_block ?? null,
+          cip_image_urls_count: Array.isArray(imageUrls) ? imageUrls.length : null
+        };
+        console.error('[TimelineCompiler] CIP block expanded to 0 trials (requestedCount <= 0). Diagnostics:', diag);
+        throw new Error(
+          'Continuous Image Presentation block would generate 0 trials (cip_images_per_block / block length resolves to 0).'
+        );
+      }
+
+      const repeatMode = (src.cip_repeat_mode ?? 'no_repeats').toString().trim().toLowerCase();
+      const repeatToFill = repeatMode === 'repeat_to_fill';
+
+      const seedParsed = Number.parseInt((block.seed ?? src.seed ?? '').toString(), 10);
+      const seed = Number.isFinite(seedParsed) ? (seedParsed >>> 0) : null;
+      const rng = seed === null ? Math.random : mulberry32(seed);
+
+      const shuffleInPlace = (arr) => {
+        for (let i = arr.length - 1; i > 0; i--) {
+          const j = Math.floor(rng() * (i + 1));
+          const tmp = arr[i];
+          arr[i] = arr[j];
+          arr[j] = tmp;
+        }
+        return arr;
+      };
+
+      const baseIndices = Array.from({ length: imageUrls.length }, (_, i) => i);
+      const chosenIndices = [];
+      if (!repeatToFill) {
+        const shuffled = shuffleInPlace(baseIndices.slice());
+        const n = Math.min(requestedCount, shuffled.length);
+        for (let i = 0; i < n; i++) chosenIndices.push(shuffled[i]);
+      } else {
+        while (chosenIndices.length < requestedCount) {
+          const cycle = shuffleInPlace(baseIndices.slice());
+          for (const idx of cycle) {
+            chosenIndices.push(idx);
+            if (chosenIndices.length >= requestedCount) break;
+          }
+        }
+      }
+
+      if (chosenIndices.length === 0) {
+        const diag = {
+          requestedCount,
+          repeatMode,
+          cip_image_urls_count: Array.isArray(imageUrls) ? imageUrls.length : null
+        };
+        console.error('[TimelineCompiler] CIP block expanded to 0 trials (chosenIndices empty). Diagnostics:', diag);
+        throw new Error('Continuous Image Presentation block expanded to 0 trials (no images selected).');
+      }
+
+      const transitionFrames = (() => {
+        const n = Number.parseInt(src.cip_transition_frames, 10);
+        if (Number.isFinite(n) && n > 0) return n;
+        return 8;
+      })();
+
+      const imageDurationMs = (() => {
+        const n = Number.parseInt(src.cip_image_duration_ms, 10);
+        if (Number.isFinite(n) && n >= 0) return n;
+        return 750;
+      })();
+
+      const transitionDurationMs = (() => {
+        const n = Number.parseInt(src.cip_transition_duration_ms, 10);
+        if (Number.isFinite(n) && n >= 0) return n;
+        return 200;
+      })();
+
+      const choiceKeysRaw = (src.cip_choice_keys ?? src.choices ?? 'f,j').toString();
+      const choices = choiceKeysRaw
+        .split(/[\n,]/g)
+        .map(s => s.trim())
+        .filter(Boolean)
+        .map(s => (s.length === 1 ? s.toLowerCase() : s));
+
+      const out = [];
+      for (let i = 0; i < chosenIndices.length; i++) {
+        const idx = chosenIndices[i];
+
+        const pickSpriteUrl = (list) => {
+          if (!Array.isArray(list) || list.length === 0) return null;
+          if (list.length === 1) return list[0] || null;
+          // If Builder exported sprites per *source asset* (aligned with imageUrls order)
+          if (list.length === imageUrls.length) return list[idx] || null;
+          // If Builder exported sprites per *generated trial* (aligned with chosenIndices order)
+          if (list.length === chosenIndices.length) return list[i] || null;
+          // Fallback: prefer trial index if available, otherwise source index.
+          if (i >= 0 && i < list.length) return list[i] || null;
+          if (idx >= 0 && idx < list.length) return list[idx] || null;
+          return null;
+        };
+
+        out.push({
+          type: 'continuous-image-presentation',
+          image_url: imageUrls[idx] || '',
+          asset_filename: filenames[idx] || '',
+          mask_to_image_sprite_url: pickSpriteUrl(m2iUrls),
+          image_to_mask_sprite_url: pickSpriteUrl(i2mUrls),
+          transition_frames: transitionFrames,
+          image_duration_ms: imageDurationMs,
+          transition_duration_ms: transitionDurationMs,
+          choices,
+          _generated_from_block: true,
+          _block_index: i,
+          _block_source_index: idx
+        });
+      }
+
+      return out;
+    }
 
     const seedParsed = Number.parseInt((block.seed ?? '').toString(), 10);
     const seed = Number.isFinite(seedParsed) ? (seedParsed >>> 0) : null;
@@ -504,6 +690,43 @@
       }
     }
 
+    const tsDefaults = (opts && isObject(opts.taskSwitchingDefaults)) ? opts.taskSwitchingDefaults : {};
+    const tsMode = (tsDefaults.stimulus_set_mode ?? 'letters_numbers').toString().trim().toLowerCase() === 'custom'
+      ? 'custom'
+      : 'letters_numbers';
+    const tsTasks = Array.isArray(tsDefaults.tasks) ? tsDefaults.tasks : [];
+    const tsLetters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+    const tsDigits = '123456789'.split('');
+    const tsGetCustomPool = (taskIndex) => {
+      const idx = (taskIndex === 2) ? 1 : 0;
+      const t = (tsTasks[idx] && typeof tsTasks[idx] === 'object') ? tsTasks[idx] : {};
+      const a = Array.isArray(t.category_a_tokens) ? t.category_a_tokens : [];
+      const b = Array.isArray(t.category_b_tokens) ? t.category_b_tokens : [];
+      const pool = [...a, ...b]
+        .map(x => (x ?? '').toString().trim())
+        .filter(Boolean);
+      return pool;
+    };
+    const tsPick = (arr, fallback) => {
+      const a = Array.isArray(arr) ? arr : [];
+      if (a.length === 0) return fallback;
+      const idx = Math.floor(rng() * a.length);
+      return a[Math.max(0, Math.min(a.length - 1, idx))];
+    };
+
+    const normalizeTsTrialType = (raw) => {
+      const s = (raw ?? '').toString().trim().toLowerCase();
+      if (s === 'single' || s === 'one' || s === 'one_task' || s === 'single_task') return 'single';
+      if (s === 'switch' || s === 'two' || s === 'switching' || s === 'task_switching') return 'switch';
+      return 'switch';
+    };
+    const normalizeTsTaskIndex = (raw, fallback) => {
+      const n = Number.parseInt(raw, 10);
+      if (n === 2) return 2;
+      if (n === 1) return 1;
+      return fallback;
+    };
+
     const trials = [];
     for (let i = 0; i < length; i++) {
       const t = { type: baseType, _generated_from_block: true, _block_index: i };
@@ -525,6 +748,50 @@
         const isCyclesPerPx = /cyc_per_px$/i.test(k);
         const shouldRound = !isCyclesPerPx && /(_ms|_px|_deg|_count|_trials|_repetitions)$/i.test(k);
         t[k] = shouldRound ? Math.round(s) : s;
+      }
+
+      // Task Switching Block generation: fill task_index + stimulus if not explicitly provided.
+      // This is done here (inside the normal Block sampling loop) so all block parameters
+      // in `values`/`windows` propagate into the generated trials.
+      if (baseType === 'task-switching-trial') {
+        const trialType = normalizeTsTrialType(t.trial_type);
+        const fixedTask = normalizeTsTaskIndex(t.single_task_index, 1);
+        const computedTaskIndex = (trialType === 'single') ? fixedTask : ((i % 2) + 1);
+
+        if (t.task_index === undefined || t.task_index === null || t.task_index === '') {
+          t.task_index = computedTaskIndex;
+        } else {
+          t.task_index = normalizeTsTaskIndex(t.task_index, computedTaskIndex);
+        }
+
+        const pickToken = (taskIndex) => {
+          const idx = (taskIndex === 2) ? 2 : 1;
+          if (tsMode === 'custom') {
+            const pool = tsGetCustomPool(idx);
+            return tsPick(pool, (idx === 2 ? '1' : 'A'));
+          }
+          return (idx === 2) ? tsPick(tsDigits, '1') : tsPick(tsLetters, 'A');
+        };
+
+        const stim1Raw = (t.stimulus_task_1 ?? '').toString().trim();
+        const stim2Raw = (t.stimulus_task_2 ?? '').toString().trim();
+        const stim1 = stim1Raw || pickToken(1);
+        const stim2 = stim2Raw || pickToken(2);
+
+        t.stimulus_task_1 = stim1;
+        t.stimulus_task_2 = stim2;
+        t.stimulus = `${stim1} ${stim2}`;
+
+        // Minimal fallbacks for cue-related fields so the plugin has predictable inputs.
+        const cueType = (t.cue_type ?? '').toString().trim().toLowerCase();
+        if (cueType === 'position') {
+          if (!t.task_1_position) t.task_1_position = 'left';
+          if (!t.task_2_position) t.task_2_position = 'right';
+        }
+        if (cueType === 'explicit') {
+          if (!t.task_1_cue_text) t.task_1_cue_text = 'LETTERS';
+          if (!t.task_2_cue_text) t.task_2_cue_text = 'NUMBERS';
+        }
       }
 
       // Gabor cue presence gating (optional): jointly sample spatial/value cue presence per trial.
@@ -573,6 +840,126 @@
           delete t.spatial_cue_probability;
           delete t.value_cue_enabled;
           delete t.value_cue_probability;
+        }
+      }
+
+      // Stroop helper: ensure congruency labels match the sampled word/ink.
+      // Builder Blocks can request congruent vs incongruent trials via `congruency`, but the
+      // generic block sampler applies arrays independently. Enforce consistency here so the
+      // compiled trial is coherent and scoring is correct.
+      if (baseType === 'stroop-trial') {
+        const normLower = (v) => (v ?? '').toString().trim().toLowerCase();
+        const requested = normLower(t.congruency || 'auto');
+
+        const wordOptsRaw = normalizeOptions(values.word);
+        const inkOptsRaw = normalizeOptions(values.ink_color_name);
+        const wordOpts = wordOptsRaw.map(x => (x ?? '').toString()).filter(s => s.trim() !== '');
+        const inkOpts = inkOptsRaw.map(x => (x ?? '').toString()).filter(s => s.trim() !== '');
+
+        const currentWord = (t.word ?? '').toString();
+        const currentInk = (t.ink_color_name ?? '').toString();
+
+        if (requested === 'congruent') {
+          // Prefer picking from the intersection of word and ink options.
+          const wordMap = new Map(wordOpts.map(s => [normLower(s), s]));
+          const inkSet = new Set(inkOpts.map(s => normLower(s)));
+          const intersection = [];
+          for (const [k, v] of wordMap.entries()) {
+            if (k && inkSet.has(k)) intersection.push(v);
+          }
+
+          const chosen = sampleFromOptions(intersection.length > 0
+            ? intersection
+            : (wordOpts.length > 0 ? wordOpts : (currentWord ? [currentWord] : []))
+          );
+
+          if (chosen !== null && chosen !== undefined && String(chosen).trim() !== '') {
+            t.word = chosen;
+            t.ink_color_name = chosen;
+          } else if (currentWord.trim() !== '') {
+            t.ink_color_name = currentWord;
+          } else if (currentInk.trim() !== '') {
+            t.word = currentInk;
+          }
+        } else if (requested === 'incongruent') {
+          // Try to pick a (word, ink) pair that differ (case-insensitive).
+          const wList = (wordOpts.length > 0) ? wordOpts : (currentWord ? [currentWord] : []);
+          const iList = (inkOpts.length > 0) ? inkOpts : (currentInk ? [currentInk] : []);
+
+          let w = currentWord;
+          let ink = currentInk;
+          for (let tries = 0; tries < 25; tries++) {
+            const wTry = sampleFromOptions(wList);
+            const iTry = sampleFromOptions(iList);
+            if (wTry === null || iTry === null) break;
+            if (normLower(wTry) && normLower(iTry) && normLower(wTry) !== normLower(iTry)) {
+              w = String(wTry);
+              ink = String(iTry);
+              break;
+            }
+          }
+
+          // If we couldn't find a mismatch by independent sampling, force a mismatch when possible.
+          if (normLower(w) === normLower(ink)) {
+            if (wList.length > 1) {
+              const filtered = wList.filter(x => normLower(x) !== normLower(ink));
+              const picked = sampleFromOptions(filtered.length > 0 ? filtered : wList);
+              if (picked !== null) w = String(picked);
+            }
+            if (normLower(w) === normLower(ink) && iList.length > 1) {
+              const filtered = iList.filter(x => normLower(x) !== normLower(w));
+              const picked = sampleFromOptions(filtered.length > 0 ? filtered : iList);
+              if (picked !== null) ink = String(picked);
+            }
+          }
+
+          if (w && w.trim() !== '') t.word = w;
+          if (ink && ink.trim() !== '') t.ink_color_name = ink;
+        }
+
+        // Always keep the per-trial label consistent with the realized values.
+        const wFinal = normLower(t.word);
+        const iFinal = normLower(t.ink_color_name);
+        if (wFinal && iFinal) {
+          t.congruency = (wFinal === iFinal) ? 'congruent' : 'incongruent';
+        } else {
+          t.congruency = 'auto';
+        }
+      }
+
+      // Emotional Stroop helper: couple list→word sampling so the recorded metadata stays coherent.
+      // Builder Blocks export structured `word_lists`, but the generic block sampler applies arrays
+      // independently. Choose a list first, then a word from that list.
+      if (baseType === 'emotional-stroop-trial') {
+        const rawLists = Array.isArray(values.word_lists) ? values.word_lists : [];
+
+        const normalizeWord = (v) => (v ?? '').toString().trim();
+        const normalizeLabel = (v) => (v ?? '').toString().trim();
+
+        const lists = rawLists.map((raw) => {
+          if (!raw) return null;
+          if (Array.isArray(raw)) {
+            const words = raw.map(normalizeWord).filter(Boolean);
+            return { label: '', words };
+          }
+          if (typeof raw === 'object') {
+            const label = normalizeLabel(raw.label ?? raw.name ?? '');
+            const wordsRaw = Array.isArray(raw.words) ? raw.words : [];
+            const words = wordsRaw.map(normalizeWord).filter(Boolean);
+            return { label, words };
+          }
+          return null;
+        }).filter((x) => x && Array.isArray(x.words) && x.words.length > 0);
+
+        if (lists.length > 0) {
+          const idx = Math.min(lists.length - 1, Math.max(0, Math.floor(rng() * lists.length)));
+          const chosenList = lists[idx];
+          const chosenWord = sampleFromOptions(chosenList.words);
+          if (chosenWord !== null && chosenWord !== undefined && normalizeWord(chosenWord) !== '') {
+            t.word = normalizeWord(chosenWord);
+            t.word_list_index = idx + 1;
+            if (chosenList.label) t.word_list_label = chosenList.label;
+          }
         }
       }
 
@@ -747,6 +1134,30 @@
       };
     }
 
+    function normalizeKeyChoices(raw) {
+      if (raw === undefined || raw === null) return 'ALL_KEYS';
+      if (Array.isArray(raw)) return raw;
+      const s = String(raw).trim();
+      if (!s) return 'ALL_KEYS';
+      const upper = s.toUpperCase();
+      if (upper === 'ALL_KEYS' || upper === 'NO_KEYS') return upper;
+      const parts = s
+        .split(/[\s,]+/)
+        .map(x => x.trim())
+        .filter(Boolean);
+      return parts.length > 0 ? parts : 'ALL_KEYS';
+    }
+
+    function normalizeButtonChoices(raw) {
+      if (raw === undefined || raw === null) return [];
+      if (Array.isArray(raw)) return raw.map(x => String(x));
+      const s = String(raw);
+      return s
+        .split(/[\n,]+/)
+        .map(x => x.trim())
+        .filter(Boolean);
+    }
+
     function resolveMaybeRelativeUrl(rawUrl) {
       const u = (rawUrl === null || rawUrl === undefined) ? '' : String(rawUrl).trim();
       if (!u) return '';
@@ -788,6 +1199,10 @@
 
     const HtmlKeyboard = requirePlugin('html-keyboard-response (jsPsychHtmlKeyboardResponse)', HtmlKeyboardResponsePlugin);
 
+    const HtmlButtonResponsePlugin = resolvePlugin(
+      (typeof jsPsychHtmlButtonResponse !== 'undefined') ? jsPsychHtmlButtonResponse : null
+    ) || resolvePlugin(window.jsPsychHtmlButtonResponse);
+
     const experimentType = config.experiment_type || 'trial-based';
     const taskType = config.task_type || 'rdm';
 
@@ -812,7 +1227,9 @@
 
     const gaborDefaults = isObject(config.gabor_settings) ? config.gabor_settings : {};
     const stroopDefaults = isObject(config.stroop_settings) ? config.stroop_settings : {};
+    const emotionalStroopDefaults = isObject(config.emotional_stroop_settings) ? config.emotional_stroop_settings : {};
     const simonDefaults = isObject(config.simon_settings) ? config.simon_settings : {};
+    const taskSwitchingDefaults = isObject(config.task_switching_settings) ? config.task_switching_settings : {};
     const pvtDefaults = isObject(config.pvt_settings) ? config.pvt_settings : {};
     const nbackDefaults = isObject(config.nback_settings) ? config.nback_settings : {};
 
@@ -835,13 +1252,14 @@
     const preserveNbackBlocks = (experimentType === 'continuous' && taskType === 'nback');
     const preserveBlocksFor = [
       ...(preservePvtBlocks ? ['pvt-trial'] : []),
-      ...(preserveNbackBlocks ? ['nback-block'] : [])
+      ...(preserveNbackBlocks ? ['nback-block', 'nback', 'nback-trial-sequence'] : [])
     ];
 
     const expandedRaw = expandTimeline(config.timeline, {
       preserveBlocksForComponentTypes: preserveBlocksFor,
       expandNbackSequences: experimentType === 'trial-based',
-      nbackDefaults
+      nbackDefaults,
+      taskSwitchingDefaults
     });
 
     // SOC Dashboard: the Builder has "helper" component types (`soc-subtask-*`, `soc-dashboard-icon`) that are
@@ -1409,11 +1827,12 @@
         if (type === 'html-keyboard-response' || type === 'instructions') {
           // Keep instructions as their own trial.
           pushRdmContinuousSegment();
+          const stimulus = (item.stimulus !== undefined && item.stimulus !== null) ? item.stimulus : item.stimulus_html;
           timeline.push({
             type: HtmlKeyboard,
-            stimulus: wrapMaybeFunctionStimulus(item.stimulus, item.prompt),
+            stimulus: wrapMaybeFunctionStimulus(stimulus, item.prompt),
             prompt: null,
-            choices: item.choices === 'ALL_KEYS' ? 'ALL_KEYS' : (Array.isArray(item.choices) ? item.choices : 'ALL_KEYS'),
+            choices: normalizeKeyChoices(item.choices),
             stimulus_duration: (item.stimulus_duration === undefined ? null : item.stimulus_duration),
             trial_duration: (item.trial_duration === undefined ? null : item.trial_duration),
             response_ends_trial: (item.response_ends_trial === undefined ? true : item.response_ends_trial),
@@ -1422,9 +1841,32 @@
           continue;
         }
 
+        if (type === 'html-button-response') {
+          pushRdmContinuousSegment();
+          const HtmlButton = requirePlugin('html-button-response (jsPsychHtmlButtonResponse)', HtmlButtonResponsePlugin);
+          const stimulus = (item.stimulus !== undefined && item.stimulus !== null) ? item.stimulus : item.stimulus_html;
+          const choices = normalizeButtonChoices(item.choices !== undefined ? item.choices : item.button_choices);
+          timeline.push({
+            type: HtmlButton,
+            stimulus: wrapMaybeFunctionStimulus(stimulus, item.prompt),
+            prompt: null,
+            choices,
+            ...(item.button_html !== undefined ? { button_html: item.button_html } : {}),
+            stimulus_duration: (item.stimulus_duration === undefined ? null : item.stimulus_duration),
+            trial_duration: (item.trial_duration === undefined ? null : item.trial_duration),
+            ...(item.button_layout !== undefined ? { button_layout: item.button_layout } : {}),
+            ...(item.grid_rows !== undefined ? { grid_rows: item.grid_rows } : {}),
+            ...(item.grid_columns !== undefined ? { grid_columns: item.grid_columns } : {}),
+            response_ends_trial: (item.response_ends_trial === undefined ? true : item.response_ends_trial),
+            data: { plugin_type: type }
+          });
+          continue;
+        }
+
         if (type === 'image-keyboard-response') {
           pushRdmContinuousSegment();
-          const src = resolveMaybeRelativeUrl(item.stimulus);
+          const rawStimulus = (item.stimulus !== undefined && item.stimulus !== null) ? item.stimulus : item.stimulus_image;
+          const src = resolveMaybeRelativeUrl(rawStimulus);
           const w = Number.isFinite(Number(item.stimulus_width)) ? Number(item.stimulus_width) : null;
           const h = Number.isFinite(Number(item.stimulus_height)) ? Number(item.stimulus_height) : null;
           const keep = (item.maintain_aspect_ratio !== undefined) ? (item.maintain_aspect_ratio === true) : true;
@@ -1446,7 +1888,7 @@
             type: HtmlKeyboard,
             stimulus: wrapMaybeFunctionStimulus(stimulusHtml, item.prompt),
             prompt: null,
-            choices: item.choices === 'ALL_KEYS' ? 'ALL_KEYS' : (Array.isArray(item.choices) ? item.choices : 'ALL_KEYS'),
+            choices: normalizeKeyChoices(item.choices),
             stimulus_duration: (item.stimulus_duration === undefined ? null : item.stimulus_duration),
             trial_duration: (item.trial_duration === undefined ? null : item.trial_duration),
             response_ends_trial: (item.response_ends_trial === undefined ? true : item.response_ends_trial),
@@ -1567,7 +2009,8 @@
             : '';
 
         // N-back continuous: Block is the generator.
-        if (baseType === 'nback-block' && experimentType === 'continuous') {
+        // Support legacy `nback-block`, the public alias `nback`, and the older name `nback-trial-sequence`.
+        if ((baseType === 'nback-block' || baseType === 'nback' || baseType === 'nback-trial-sequence') && experimentType === 'continuous') {
           const NbackContinuous = requirePlugin('nback-continuous (window.jsPsychNbackContinuous)', window.jsPsychNbackContinuous);
           const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, 'nback-continuous');
 
@@ -2173,6 +2616,33 @@
         continue;
       }
 
+      // Continuous Image Presentation (one data row per image)
+      if (type === 'continuous-image-presentation') {
+        const Cip = requirePlugin(
+          'continuous-image-presentation (window.jsPsychContinuousImagePresentation)',
+          window.jsPsychContinuousImagePresentation
+        );
+        const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, type);
+
+        const trial = {
+          ...item,
+          type: Cip,
+          ...(onFinish ? { on_finish: onFinish } : {}),
+          data: {
+            plugin_type: type,
+            task_type: 'continuous-image',
+            stimulus_image_url: item.image_url ?? null,
+            stimulus_filename: item.asset_filename ?? null,
+            _generated_from_block: !!item._generated_from_block,
+            _block_index: Number.isFinite(item._block_index) ? item._block_index : null,
+            _block_source_index: Number.isFinite(item._block_source_index) ? item._block_source_index : null
+          }
+        };
+
+        timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
+        continue;
+      }
+
       // N-back task (trial-based)
       if (type === 'nback-block') {
         const Nback = requirePlugin('nback (window.jsPsychNback)', window.jsPsychNback);
@@ -2335,13 +2805,23 @@
           ? Number(item.iti_ms)
           : (Number.isFinite(Number(stroopDefaults.iti_ms)) ? Number(stroopDefaults.iti_ms) : 0);
 
-        const word = norm(item.word || '');
-        const inkName = norm(item.ink_color_name || '');
+        // If a trial omits word/ink, fall back to experiment-wide stimuli rather than
+        // letting the plugin defaults (RED/BLUE) leak into customized experiments.
+        const stimulusNames = stimuli.map((s) => norm(s && s.name)).filter(Boolean);
 
-        const providedCongruency = norm(item.congruency || 'auto').toLowerCase();
-        const congruency = (providedCongruency === 'congruent' || providedCongruency === 'incongruent')
-          ? providedCongruency
-          : computeCongruency(word, inkName);
+        const word = (() => {
+          const w = norm(item.word || '');
+          return w || (stimulusNames[0] || 'RED');
+        })();
+
+        const inkName = (() => {
+          const n = norm(item.ink_color_name || '');
+          return n || (stimulusNames[1] || stimulusNames[0] || 'BLUE');
+        })();
+
+        // Always compute congruency from the realized word/ink values.
+        // (Block generation and/or manual edits can otherwise leave a stale label that breaks scoring.)
+        const congruency = computeCongruency(word, inkName);
 
         const inkHex = findInkHex(inkName, item.ink_color_hex);
 
@@ -2369,6 +2849,134 @@
           data: {
             plugin_type: type,
             task_type: 'stroop',
+            _generated_from_block: !!item._generated_from_block,
+            _block_index: Number.isFinite(item._block_index) ? item._block_index : null
+          }
+        };
+        timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
+        continue;
+      }
+
+      // Emotional Stroop task (color naming only; uses the same Stroop plugin)
+      if (type === 'emotional-stroop-trial') {
+        const Stroop = requirePlugin('stroop (window.jsPsychStroop)', window.jsPsychStroop);
+        const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, type);
+
+        const itemCopy = { ...item };
+        delete itemCopy.type;
+        delete itemCopy.on_start;
+        delete itemCopy.on_finish;
+
+        const stimuli = Array.isArray(emotionalStroopDefaults.stimuli) ? emotionalStroopDefaults.stimuli : [];
+        const wordOptions = Array.isArray(emotionalStroopDefaults.word_options) ? emotionalStroopDefaults.word_options : [];
+        const wordListsDefaults = Array.isArray(emotionalStroopDefaults.word_lists) ? emotionalStroopDefaults.word_lists : [];
+
+        const toStr = (v) => (v === undefined || v === null) ? '' : v.toString();
+        const norm = (v) => toStr(v).trim();
+
+        const findInkHex = (inkName, fallbackHex) => {
+          const needle = norm(inkName).toLowerCase();
+          for (const s of stimuli) {
+            const n = norm(s && s.name).toLowerCase();
+            if (n && n === needle) {
+              const c = norm(s && (s.color || s.hex || s.color_hex));
+              if (c) return c;
+            }
+          }
+          return norm(fallbackHex) || '#ffffff';
+        };
+
+        const computeCongruency = (word, inkName) => {
+          const w = norm(word).toLowerCase();
+          const i = norm(inkName).toLowerCase();
+          if (!w || !i) return 'auto';
+          return (w === i) ? 'congruent' : 'incongruent';
+        };
+
+        const responseMode = 'color_naming';
+
+        const responseDevice = (item.response_device && item.response_device !== 'inherit')
+          ? item.response_device
+          : (emotionalStroopDefaults.response_device || 'keyboard');
+
+        const choiceKeys = (Array.isArray(item.choice_keys) && item.choice_keys.length > 0)
+          ? item.choice_keys
+          : (Array.isArray(emotionalStroopDefaults.choice_keys) ? emotionalStroopDefaults.choice_keys : []);
+
+        const fontSizePx = Number.isFinite(Number(item.stimulus_font_size_px))
+          ? Number(item.stimulus_font_size_px)
+          : (Number.isFinite(Number(emotionalStroopDefaults.stimulus_font_size_px)) ? Number(emotionalStroopDefaults.stimulus_font_size_px) : 72);
+
+        const stimMs = Number.isFinite(Number(item.stimulus_duration_ms))
+          ? Number(item.stimulus_duration_ms)
+          : (Number.isFinite(Number(emotionalStroopDefaults.stimulus_duration_ms)) ? Number(emotionalStroopDefaults.stimulus_duration_ms) : 0);
+
+        const trialMs = Number.isFinite(Number(item.trial_duration_ms))
+          ? Number(item.trial_duration_ms)
+          : (Number.isFinite(Number(emotionalStroopDefaults.trial_duration_ms)) ? Number(emotionalStroopDefaults.trial_duration_ms) : 2000);
+
+        const itiMs = Number.isFinite(Number(item.iti_ms))
+          ? Number(item.iti_ms)
+          : (Number.isFinite(Number(emotionalStroopDefaults.iti_ms)) ? Number(emotionalStroopDefaults.iti_ms) : 0);
+
+        const stimulusNames = stimuli.map((s) => norm(s && s.name)).filter(Boolean);
+
+        const wordListIndex = (() => {
+          const n = Number(item.word_list_index);
+          return Number.isFinite(n) ? parseInt(n, 10) : null;
+        })();
+
+        const wordListLabel = (() => {
+          const direct = norm(item.word_list_label || '');
+          if (direct) return direct;
+          if (!wordListIndex || wordListIndex < 1) return '';
+          const def = wordListsDefaults[wordListIndex - 1];
+          if (def && typeof def === 'object' && !Array.isArray(def)) {
+            const lbl = norm(def.label ?? def.name ?? '');
+            if (lbl) return lbl;
+          }
+          return '';
+        })();
+
+        const word = (() => {
+          const w = norm(item.word || '');
+          if (w) return w;
+          const opt0 = norm(wordOptions[0] || '');
+          return opt0 || 'HAPPY';
+        })();
+
+        const inkName = (() => {
+          const n = norm(item.ink_color_name || '');
+          return n || (stimulusNames[0] || 'BLUE');
+        })();
+
+        const congruency = computeCongruency(word, inkName);
+        const inkHex = findInkHex(inkName, item.ink_color_hex);
+
+        const trial = {
+          type: Stroop,
+
+          ...itemCopy,
+
+          stimuli,
+          response_mode: responseMode,
+          response_device: responseDevice,
+          choice_keys: choiceKeys,
+          stimulus_font_size_px: fontSizePx,
+          stimulus_duration_ms: stimMs,
+          trial_duration_ms: trialMs,
+          ink_color_hex: inkHex,
+          congruency,
+
+          post_trial_gap: itiMs,
+          ...(onFinish ? { on_finish: onFinish } : {}),
+
+          data: {
+            plugin_type: type,
+            task_type: 'emotional-stroop',
+            original_type: type,
+            word_list_label: wordListLabel || null,
+            word_list_index: wordListIndex,
             _generated_from_block: !!item._generated_from_block,
             _block_index: Number.isFinite(item._block_index) ? item._block_index : null
           }
@@ -2498,6 +3106,152 @@
             _block_index: Number.isFinite(item._block_index) ? item._block_index : null
           }
         };
+        timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
+        continue;
+      }
+
+      // Task Switching
+      if (type === 'task-switching-trial') {
+        const TaskSwitching = requirePlugin('task-switching (window.jsPsychTaskSwitching)', window.jsPsychTaskSwitching);
+        const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, type);
+
+        const itemCopy = { ...item };
+        delete itemCopy.type;
+        delete itemCopy.on_start;
+        delete itemCopy.on_finish;
+
+        const toStr = (v) => (v === undefined || v === null) ? '' : v.toString();
+        const norm = (v) => toStr(v).trim();
+
+        const parseBool = (v) => {
+          if (typeof v === 'boolean') return v;
+          if (typeof v === 'number') return v > 0;
+          if (typeof v === 'string') {
+            const s = v.trim().toLowerCase();
+            if (s === '' || s === 'inherit') return null;
+            if (s === 'true' || s === '1' || s === 'yes' || s === 'on' || s === 'enabled') return true;
+            if (s === 'false' || s === '0' || s === 'no' || s === 'off' || s === 'disabled') return false;
+          }
+          return null;
+        };
+
+        const coerceTaskIndex = (v, fallback) => {
+          const n = Number.parseInt(v, 10);
+          if (n === 2) return 2;
+          if (n === 1) return 1;
+          return fallback;
+        };
+
+        const coercePosition = (v, fallback) => {
+          const s = norm(v).toLowerCase();
+          if (s === 'left' || s === 'right' || s === 'top' || s === 'bottom') return s;
+          return fallback;
+        };
+
+        const coerceMode = (v, fallback) => {
+          const s = norm(v).toLowerCase();
+          if (s === 'custom') return 'custom';
+          if (s === 'letters_numbers') return 'letters_numbers';
+          return fallback;
+        };
+
+        const mode = coerceMode(
+          (item.stimulus_set_mode && item.stimulus_set_mode !== 'inherit') ? item.stimulus_set_mode : null,
+          coerceMode(taskSwitchingDefaults.stimulus_set_mode, 'letters_numbers')
+        );
+
+        const tasks = Array.isArray(taskSwitchingDefaults.tasks) ? taskSwitchingDefaults.tasks : [];
+
+        const taskIndex = coerceTaskIndex(item.task_index, 1);
+
+        const stimParts = (() => {
+          const raw = norm(item.stimulus);
+          if (!raw) return [];
+          return raw.split(/\s+/).map(s => s.trim()).filter(Boolean);
+        })();
+
+        let stimulusTask1 = norm(item.stimulus_task_1);
+        let stimulusTask2 = norm(item.stimulus_task_2);
+
+        if ((!stimulusTask1 || !stimulusTask2) && stimParts.length >= 2) {
+          if (!stimulusTask1) stimulusTask1 = stimParts[0];
+          if (!stimulusTask2) stimulusTask2 = stimParts[1];
+        }
+
+        const legacyStimulus = norm(item.stimulus);
+        if (!stimulusTask1) {
+          stimulusTask1 = (taskIndex === 1 && legacyStimulus) ? legacyStimulus : 'A';
+        }
+        if (!stimulusTask2) {
+          stimulusTask2 = (taskIndex === 2 && legacyStimulus) ? legacyStimulus : '1';
+        }
+
+        const stimulus = `${stimulusTask1} ${stimulusTask2}`;
+
+        const position = coercePosition(
+          (item.stimulus_position && item.stimulus_position !== 'inherit') ? item.stimulus_position : null,
+          coercePosition(taskSwitchingDefaults.stimulus_position, 'top')
+        );
+
+        const borderEnabled = (() => {
+          const a = parseBool(item.border_enabled);
+          if (a !== null) return a;
+          const b = parseBool(taskSwitchingDefaults.border_enabled);
+          if (b !== null) return b;
+          return false;
+        })();
+
+        const leftKey = (typeof item.left_key === 'string' && item.left_key.trim() !== '' && item.left_key !== 'inherit')
+          ? item.left_key
+          : (typeof taskSwitchingDefaults.left_key === 'string' && taskSwitchingDefaults.left_key.trim() !== '' ? taskSwitchingDefaults.left_key : 'f');
+
+        const rightKey = (typeof item.right_key === 'string' && item.right_key.trim() !== '' && item.right_key !== 'inherit')
+          ? item.right_key
+          : (typeof taskSwitchingDefaults.right_key === 'string' && taskSwitchingDefaults.right_key.trim() !== '' ? taskSwitchingDefaults.right_key : 'j');
+
+        const stimMs = Number.isFinite(Number(item.stimulus_duration_ms))
+          ? Number(item.stimulus_duration_ms)
+          : (Number.isFinite(Number(taskSwitchingDefaults.stimulus_duration_ms)) ? Number(taskSwitchingDefaults.stimulus_duration_ms) : 0);
+
+        const trialMs = Number.isFinite(Number(item.trial_duration_ms))
+          ? Number(item.trial_duration_ms)
+          : (Number.isFinite(Number(taskSwitchingDefaults.trial_duration_ms)) ? Number(taskSwitchingDefaults.trial_duration_ms) : 2000);
+
+        const itiMs = Number.isFinite(Number(item.iti_ms))
+          ? Number(item.iti_ms)
+          : (Number.isFinite(Number(taskSwitchingDefaults.iti_ms)) ? Number(taskSwitchingDefaults.iti_ms) : baseIti);
+
+        const trial = {
+          type: TaskSwitching,
+
+          ...itemCopy,
+
+          task_index: taskIndex,
+          stimulus,
+          stimulus_task_1: stimulusTask1,
+          stimulus_task_2: stimulusTask2,
+          stimulus_position: position,
+          border_enabled: borderEnabled,
+          left_key: leftKey,
+          right_key: rightKey,
+          stimulus_set_mode: mode,
+          tasks,
+
+          stimulus_duration_ms: stimMs,
+          trial_duration_ms: trialMs,
+
+          iti_ms: itiMs,
+          post_trial_gap: itiMs,
+          ...(onFinish ? { on_finish: onFinish } : {}),
+
+          data: {
+            plugin_type: type,
+            task_type: 'task-switching',
+            _generated_from_block: !!item._generated_from_block,
+            _block_index: Number.isFinite(item._block_index) ? item._block_index : null
+          }
+        };
+
         timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
         continue;
       }

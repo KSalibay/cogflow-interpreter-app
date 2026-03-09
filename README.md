@@ -6,6 +6,22 @@
 
 Static runtime that loads a CogFlow Builder export and runs it via jsPsych.
 
+## Contents
+
+- [Recommended workflow (JATOS)](#recommended-workflow-builder--token-store--interpreter-jatos)
+- [JATOS setup (Component Properties)](#jatos-setup-component-properties)
+- [What this runtime does](#what-this-runtime-does)
+- [Config loading modes](#config-loading-modes)
+- [Quick start (local)](#quick-start-local)
+- [Debugging and validation flags](#debugging-and-validation-flags)
+- [Supported tasks and component types](#supported-tasks-and-timeline-component-types)
+- [Special paradigms](#special-paradigms)
+- [Trial-based tasks](#trial-based-tasks)
+- [Eye tracking (WebGazer)](#eye-tracking-webgazer)
+- [Current scope / assumptions](#current-scope--assumptions)
+- [Files](#files)
+- [Repositories](#repositories)
+
 ## Recommended workflow: Builder → Token Store → Interpreter (JATOS)
 
 The default “demo-ready” deployment path is:
@@ -14,7 +30,7 @@ The default “demo-ready” deployment path is:
 - Export it to the **CogFlow Token Store** (Cloudflare Worker + KV, optional R2 assets)
 - Run the **Interpreter inside JATOS**, loading the config via JATOS Component Properties (no fragile URL params)
 
-### JATOS component setup (Interpreter)
+## JATOS setup (Component Properties)
 
 This repo includes a JATOS entry wrapper: `index_jatos.html`.
 
@@ -65,6 +81,10 @@ Notes:
 - Do not show tokens to participants. The interpreter keeps token-store loading UI hidden unless `?debug=1`.
 - The interpreter no longer relies on `?id=...` in JATOS (see `window.COGFLOW_DISABLE_URL_ID` in `index_jatos.html`).
 
+Token Store note:
+
+- `config_store_base_url` should point to *your* Token Store Worker URL for the deployment (not a personal/demo Worker).
+
 ### Results in JATOS
 
 On completion inside JATOS, the interpreter:
@@ -73,11 +93,6 @@ On completion inside JATOS, the interpreter:
 - submits a small JSON **summary object** as Result Data (rather than a raw array blob)
 
 If the result-file upload fails for any reason, it falls back to submitting the full JSON payload in Result Data.
-
-## Repositories
-
-- Interpreter repo: https://github.com/KSalibay/json-interpreter-app
-- Builder repo: https://github.com/KSalibay/json-builder-app
 
 ## What this runtime does
 
@@ -92,6 +107,73 @@ Key features:
 - Rewards v2 integration (compile-time wrapping + runtime screens/milestones)
 - Optional eye tracking via WebGazer (permission + calibration injection, plus output bundling)
 - Theming support via `ui_settings.theme` (from Builder exports)
+
+## Config loading modes
+
+The interpreter supports multiple ways to load a config. In production, prefer the JATOS + Token Store path.
+
+- Primary (JATOS): Token Store settings from **Component Properties**
+  - Single-config: `config_store_base_url`, `config_store_config_id`, `config_store_read_token`
+  - Multi-config: `config_store_base_url`, `config_store_code`, `config_store_configs` (array)
+
+- Secondary (local / legacy): `?id=YOUR_ID`
+  - Loads `configs/YOUR_ID.json`
+  - `id` is sanitized to `[A-Za-z0-9_-]`.
+
+- Multi-config mode (local / legacy): `?id=XXXXXXX` (7 alphanumeric characters)
+  - Loads all `configs/XXXXXXX-*.json`, shuffles their order, and runs them as one jsPsych session.
+  - File discovery is best-effort:
+    - If the server exposes a directory listing for `configs/`, it will be scraped.
+    - Otherwise, create/update `configs/manifest.json` (array of filenames) and it will be used.
+
+- Optional remote config sources (e.g., SharePoint)
+  - `?base=...` sets the directory/URL used for loading configs (default: `configs`).
+  - `?manifest=...` sets an explicit manifest JSON URL (recommended for SharePoint).
+  - Example:
+    - `index.html?id=ABC1234&base=https://your-site/configs&manifest=https://your-site/configs/manifest.json`
+
+- Fallback: no `id` → you can upload a JSON file via the UI.
+
+## Quick start (local)
+
+Use VS Code Live Server on `index.html`.
+
+Example:
+- `http://127.0.0.1:5500/index.html?id=experiment_config_2026-01-16`
+
+Multi-config example:
+- `http://127.0.0.1:5500/index.html?id=ABC1234`
+
+Note: the exact URL prefix depends on your Live Server workspace root; the important part is `index.html?id=...`.
+
+If Live Server doesn't expose a directory listing, generate/update the manifest:
+
+- PowerShell: `powershell -ExecutionPolicy Bypass -File scripts/generate-manifest.ps1`
+
+## Debugging and validation flags
+
+Debugging (local):
+
+- Add `&debug=1` to auto-download the jsPsych data CSV on finish.
+  - Example: `.../index.html?id=ABC1234&debug=1`
+- Optional: `&debug=json` to download JSON instead.
+  - If eye tracking is enabled, debug mode also downloads a second gaze-only JSON file: `cogflow-eye-tracking-...json`.
+  - Debug mode also shows an on-screen eye-tracking HUD (when eye tracking is enabled) to confirm that samples are accumulating.
+
+Validation (local):
+
+- Add `&validate=1` to run a quick console self-check of adaptive blocks (QUEST/staircase) and Gabor parameter propagation.
+  - This compiles a separate timeline for validation so it does not affect the real run.
+- Use `&validate=only` to run validation without starting the experiment.
+- Example sample configs included (single-task to match Builder validators):
+  - Gabor QUEST: `.../index.html?id=sample_adaptive_gabor_quest&validate=1&debug=1`
+  - RDM staircase: `.../index.html?id=sample_adaptive_rdm_staircase&validate=1&debug=1`
+
+Gabor-specific debug:
+
+- `&gabor_debug=1` (or `&debug=1`) enforces longer stimulus/mask durations for visibility.
+- In debug mode, each stimulus patch overlays `freq=... cyc/px`.
+  - If it shows `freq=0.0000`, your config likely rounded the spatial frequency somewhere upstream (common cause: treating `spatial_frequency_cyc_per_px` like a pixel integer).
 
 ## Supported tasks and timeline component types
 
@@ -128,11 +210,13 @@ Emotional Stroop notes:
 - Builder exports top-level defaults under `emotional_stroop_settings` (including `word_lists` / `word_options` and the shared Stroop ink `stimuli`).
 - During Block expansion, the compiler couples list selection to word selection so the per-trial metadata `word_list_label` / `word_list_index` stays coherent.
 
-## Continuous Image Presentation (CIP)
+## Special paradigms
+
+### Continuous Image Presentation (CIP)
 
 Continuous Image Presentation is a **block-driven** paradigm: a single `timeline[]` Block expands into one jsPsych trial per selected image.
 
-### Plugin loading
+#### Plugin loading
 
 The CIP plugin must be available globally as:
 
@@ -140,7 +224,7 @@ The CIP plugin must be available globally as:
 
 This repo’s `index.html` and `index_jatos.html` load `src/jspsych-continuous-image-presentation.js`.
 
-### Required exported fields
+#### Required exported fields
 
 The Interpreter expects CIP blocks to include fully-resolved asset URLs inside `block.parameter_values` (exported by the Builder after CIP assets are generated/applied):
 
@@ -154,16 +238,16 @@ Additional per-block settings (also read from `parameter_values`):
 - `cip_choice_keys`
 - `cip_repeat_mode`, `cip_images_per_block`
 
-### Diagnostics (common failure mode)
+#### Diagnostics (common failure mode)
 
 If a config contains CIP blocks but `cip_image_urls` is missing/empty (or the block would generate 0 trials), the Interpreter shows a blocking **Interpreter error** with diagnostics.
 This prevents the study from silently “ending” right after instructions.
 
-## Task Switching
+### Task Switching
 
 Task Switching runs via a custom jsPsych plugin (loaded as `window.jsPsychTaskSwitching`).
 
-### Defaults (`task_switching_settings`)
+#### Defaults (`task_switching_settings`)
 
 Builder exports Task Switching experiment-wide defaults under:
 
@@ -215,31 +299,7 @@ Notes:
   - `position`: stimulus position varies by task via `task_1_position` / `task_2_position`
   - `color`: stimulus color varies by task via `task_1_color_hex` / `task_2_color_hex`
 
-## How it loads configs
-
-- Primary (JATOS): Token Store settings from **Component Properties**
-  - Single-config: `config_store_base_url`, `config_store_config_id`, `config_store_read_token`
-  - Multi-config: `config_store_base_url`, `config_store_code`, `config_store_configs` (array)
-
-- Secondary (local / legacy): `?id=YOUR_ID`
-  - Loads `configs/YOUR_ID.json`
-  - `id` is sanitized to `[A-Za-z0-9_-]`.
-
-- Multi-config mode (local / legacy): `?id=XXXXXXX` (7 alphanumeric characters)
-  - Loads all `configs/XXXXXXX-*.json`, shuffles their order, and runs them as one jsPsych session.
-  - File discovery is best-effort:
-    - If the server exposes a directory listing for `configs/`, it will be scraped.
-    - Otherwise, create/update `configs/manifest.json` (array of filenames) and it will be used.
-
-- Optional remote config sources (e.g., SharePoint)
-  - `?base=...` sets the directory/URL used for loading configs (default: `configs`).
-  - `?manifest=...` sets an explicit manifest JSON URL (recommended for SharePoint).
-  - Example:
-    - `index.html?id=ABC1234&base=https://your-site/configs&manifest=https://your-site/configs/manifest.json`
-
-- Fallback: no `id` → you can upload a JSON file via the UI.
-
-## DRT (Detection Response Task)
+### DRT (Detection Response Task)
 
 DRT is scheduled explicitly in the compiled timeline using:
 
@@ -268,41 +328,7 @@ Notes:
 - The per-trial row is finalized at the end of the response window (or when the next DRT trial begins).
 - The runtime also writes `drt_event: start|stop` rows with the effective `drt_settings` for auditing.
 
-## Quick start (local)
-
-Use VS Code Live Server on `JSON_Interpreter_App/index.html`.
-
-Example:
-- `http://127.0.0.1:5500/JSON_Interpreter_App/index.html?id=experiment_config_2026-01-16`
-
-Multi-config example:
-- `http://127.0.0.1:5500/JSON_Interpreter_App/index.html?id=ABC1234`
-
-Debugging (local):
-- Add `&debug=1` to auto-download the jsPsych data CSV on finish.
-  - Example: `.../index.html?id=ABC1234&debug=1`
-- Optional: `&debug=json` to download JSON instead.
-  - If eye tracking is enabled, debug mode also downloads a second gaze-only JSON file: `cogflow-eye-tracking-...json`.
-  - Debug mode also shows an on-screen eye-tracking HUD (when eye tracking is enabled) to confirm that samples are accumulating.
-
-Validation (local):
-- Add `&validate=1` to run a quick console self-check of adaptive blocks (QUEST/staircase) and Gabor parameter propagation.
-  - This compiles a separate timeline for validation so it does not affect the real run.
-- Use `&validate=only` to run validation without starting the experiment.
-- Example sample configs included (single-task to match Builder validators):
-  - Gabor QUEST: `.../index.html?id=sample_adaptive_gabor_quest&validate=1&debug=1`
-  - RDM staircase: `.../index.html?id=sample_adaptive_rdm_staircase&validate=1&debug=1`
-
-Gabor-specific debug:
-
-- `&gabor_debug=1` (or `&debug=1`) enforces longer stimulus/mask durations for visibility.
-- In debug mode, each stimulus patch overlays `freq=... cyc/px`.
-  - If it shows `freq=0.0000`, your config likely rounded the spatial frequency somewhere upstream (common cause: treating `spatial_frequency_cyc_per_px` like a pixel integer).
-
-If Live Server doesn't expose a directory listing, generate/update the manifest:
-- PowerShell: `powershell -ExecutionPolicy Bypass -File scripts/generate-manifest.ps1`
-
-## SOC Dashboard
+### SOC Dashboard
 
 The interpreter includes a custom jsPsych plugin that renders a multi-window “SOC desktop” inside a single jsPsych trial.
 
@@ -433,16 +459,6 @@ Builder exports task-specific defaults at the top level (merged into each trial 
 
 If `pvt_settings.add_trial_per_false_start === true` and a `block` generates `pvt-trial`, the compiler uses a jsPsych loop so the block produces the requested number of **valid** trials (false starts do not count toward the target).
 
-## JATOS
-
-Recommended: use `index_jatos.html` as the component HTML file.
-
-When hosted inside JATOS, the interpreter will:
-
-- load configs via Token Store settings provided in Component Properties
-- submit results via the JATOS API (`jatos.submitResultData(...)`)
-- upload a result JSON file (preferred) and then advance/end the study via `jatos.endStudyAjax(true)`
-
 ## Eye tracking (WebGazer)
 
 The interpreter can optionally collect camera-based gaze estimates via WebGazer.
@@ -503,12 +519,39 @@ The compiler accepts either of these `parameter_windows` shapes:
 
 ## Files
 
-- `index.html`: loader UI + jsPsych boot
+High-level map:
+
+- `index.html`: local entry (loader UI + jsPsych boot)
+- `index_jatos.html`: JATOS entry wrapper (reads Component Properties, disables URL-id loading in JATOS)
+- `configs/`: sample configs + local/legacy configs
+- `scripts/generate-manifest.ps1`: generate `configs/manifest.json` when directory listing is unavailable
 - `src/main.js`: orchestration
-- `src/configLoader.js`: load by id or file
-- `src/timelineCompiler.js`: expand blocks + map to jsPsych timeline
-- `src/rdmEngine.js`: dot-motion renderer used by the jsPsych plugin
-- `src/jspsych-rdm.js`: custom jsPsych plugin for RDM stimuli
-- `src/jspsych-stroop.js`: jsPsych plugin for Stroop trials
-- `src/jspsych-simon.js`: jsPsych plugin for Simon trials
-- `src/jspsych-pvt.js`: jsPsych plugin for PVT trials
+- `src/configLoader.js`: loads configs (Token Store, URL mode, file upload)
+- `src/timelineCompiler.js`: expands blocks + compiles to jsPsych timeline
+
+Task/plugin implementations (selected):
+
+- `src/drtEngine.js`: DRT scheduler + buffering
+- `src/jspsych-continuous-image-presentation.js`: CIP plugin
+- `src/jspsych-soc-dashboard.js`: SOC Dashboard plugin
+- `src/jspsych-task-switching.js`: Task Switching plugin
+- `src/eyeTrackingWebgazer.js`: WebGazer integration
+
+- `src/rdmEngine.js`: dot-motion renderer used by the RDM plugins
+- `src/jspsych-rdm.js`: RDM (trial-based)
+- `src/jspsych-rdm-continuous.js`: RDM (continuous)
+- `src/jspsych-flanker.js`: Flanker
+- `src/jspsych-sart.js`: SART
+- `src/jspsych-gabor.js`: Gabor
+- `src/jspsych-stroop.js`: Stroop + Emotional Stroop
+- `src/jspsych-simon.js`: Simon
+- `src/jspsych-pvt.js`: PVT
+- `src/jspsych-nback.js`: N-back (trial-based)
+- `src/jspsych-nback-continuous.js`: N-back (continuous)
+- `src/jspsych-survey-response.js`: Survey response
+- `src/jspsych-visual-angle-calibration.js`: Visual angle calibration
+
+## Repositories
+
+- Interpreter repo: https://github.com/KSalibay/json-interpreter-app
+- Builder repo: https://github.com/KSalibay/json-builder-app

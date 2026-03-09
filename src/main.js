@@ -144,6 +144,109 @@
     }
   }
 
+  function collectCipAssetUrlsFromTimeline(jsPsychTimeline) {
+    const timeline = Array.isArray(jsPsychTimeline) ? jsPsychTimeline : [];
+    const urls = new Set();
+
+    const maybeAdd = (raw) => {
+      const s = (raw === undefined || raw === null) ? '' : String(raw).trim();
+      if (!s) return;
+      const lower = s.toLowerCase();
+      if (lower === 'none' || lower === 'null' || lower === 'undefined') return;
+      // Accept absolute URLs, root-relative paths (e.g. /publix/..), relative paths, and data URLs.
+      if (!/^(https?:\/\/|\/|\.?\.\/|data:image\/)/i.test(s)) return;
+      urls.add(s);
+    };
+
+    for (const t of timeline) {
+      const pluginType = (t && t.data && typeof t.data === 'object') ? t.data.plugin_type : null;
+      if (pluginType !== 'continuous-image-presentation') continue;
+      maybeAdd(t.image_url);
+      maybeAdd(t.mask_to_image_sprite_url);
+      maybeAdd(t.image_to_mask_sprite_url);
+
+      // Back-compat / alternative key names (defensive)
+      maybeAdd(t.stimulus_image_url);
+      maybeAdd(t.maskToImageSpriteUrl);
+      maybeAdd(t.imageToMaskSpriteUrl);
+    }
+
+    return Array.from(urls);
+  }
+
+  function preloadImageUrl(url, { timeoutMs = 20000 } = {}) {
+    return new Promise((resolve) => {
+      const u = (url === undefined || url === null) ? '' : String(url).trim();
+      if (!u) return resolve({ ok: false, url: u, reason: 'empty_url' });
+
+      let done = false;
+      const finish = (ok, reason) => {
+        if (done) return;
+        done = true;
+        try {
+          if (timer) clearTimeout(timer);
+        } catch {
+          // ignore
+        }
+        resolve({ ok: !!ok, url: u, reason: reason || null });
+      };
+
+      let timer = null;
+      try {
+        timer = setTimeout(() => finish(false, 'timeout'), Math.max(0, Number(timeoutMs) || 0));
+      } catch {
+        timer = null;
+      }
+
+      try {
+        const img = new Image();
+        // Prefer anonymous CORS so the plugin can draw into canvas when the server permits it.
+        // If the server doesn't send CORS headers, the onerror path will handle it.
+        try { img.crossOrigin = 'anonymous'; } catch { /* ignore */ }
+        img.onload = () => finish(true, null);
+        img.onerror = () => finish(false, 'error');
+        img.src = u;
+      } catch {
+        finish(false, 'exception');
+      }
+    });
+  }
+
+  async function preloadImageUrls(urls, {
+    concurrency = 6,
+    timeoutMs = 20000,
+    onProgress = null
+  } = {}) {
+    const list = Array.isArray(urls) ? urls.filter(Boolean) : [];
+    if (list.length === 0) return { ok: true, total: 0, loaded: 0, failed: 0 };
+
+    const limit = Math.max(1, Math.min(12, Number(concurrency) || 6));
+    let idx = 0;
+    let loaded = 0;
+    let failed = 0;
+
+    const worker = async () => {
+      while (true) {
+        const i = idx;
+        idx += 1;
+        if (i >= list.length) return;
+        const res = await preloadImageUrl(list[i], { timeoutMs });
+        if (res && res.ok) loaded += 1;
+        else failed += 1;
+        try {
+          if (typeof onProgress === 'function') onProgress({ done: loaded + failed, total: list.length, loaded, failed });
+        } catch {
+          // ignore
+        }
+      }
+    };
+
+    const workers = [];
+    for (let i = 0; i < Math.min(limit, list.length); i++) workers.push(worker());
+    await Promise.all(workers);
+    return { ok: failed === 0, total: list.length, loaded, failed };
+  }
+
   function listJatosTokenStoreKeys() {
     const interesting = (k) => {
       const s = (k ?? '').toString().toLowerCase();
@@ -1606,6 +1709,34 @@
       }
     } catch {
       // ignore
+    }
+
+    // Preload CIP assets (images + transition sprites) before starting.
+    // This prevents the CIP plugin from falling back to placeholder behavior while assets stream in.
+    try {
+      const cipUrls = collectCipAssetUrlsFromTimeline(compiled.timeline);
+      if (cipUrls.length > 0) {
+        renderBlockingStatus('Loading', 'Experiment loading, please wait...');
+
+        let lastTick = 0;
+        const res = await preloadImageUrls(cipUrls, {
+          concurrency: 6,
+          timeoutMs: 25000,
+          onProgress: ({ done, total }) => {
+            // Avoid over-rendering the splash; update at most a few times per second.
+            const now = Date.now();
+            if (now - lastTick < 250 && done < total) return;
+            lastTick = now;
+            renderBlockingStatus('Loading', `Experiment loading, please wait... (${done}/${total})`);
+          }
+        });
+
+        if (res && res.failed > 0) {
+          console.warn('[Interpreter] CIP asset preload had failures:', res);
+        }
+      }
+    } catch (e) {
+      console.warn('[Interpreter] CIP asset preload failed (continuing anyway):', e);
     }
 
     setStatus(`Compiled timeline: ${compiled.timeline.length} items (${compiled.experimentType}). Starting...`);

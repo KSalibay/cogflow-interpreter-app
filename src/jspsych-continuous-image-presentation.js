@@ -82,6 +82,7 @@
     return new Promise((resolve) => {
       if (!url) return resolve(null);
       const img = new Image();
+      try { img.crossOrigin = 'anonymous'; } catch { /* ignore */ }
       img.onload = () => resolve(img);
       img.onerror = () => resolve(null);
       img.src = url;
@@ -161,7 +162,7 @@
       display_element.innerHTML = `
         <div id="${wrapId}" style="width:100%; min-height:100vh; min-height:100svh; min-height:100dvh; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; box-sizing:border-box; padding:24px 12px;">
           <div id="${stageId}" style="position:relative; display:flex; align-items:center; justify-content:center; width:100%;">
-            <div id="${spriteId}" style="display:none; background-repeat:no-repeat; background-position:0% 0%; image-rendering: pixelated;"></div>
+            <canvas id="${spriteId}" style="display:none; image-rendering: pixelated;"></canvas>
             <img id="${imgId}" alt="" style="display:none; max-width:90vw; max-height:70vh; object-fit:contain;" />
           </div>
           <div id="${promptId}" style="opacity:0.7; font-size:12px; text-align:center;"></div>
@@ -180,21 +181,67 @@
         return;
       }
 
-      const promptText = `Press ${choices.map(k => (k === ' ' ? 'space' : k)).join(' / ')}`;
-      promptEl.textContent = promptText;
+      const spriteCanvas = spriteEl;
+      const spriteCtx = (spriteCanvas && spriteCanvas.getContext) ? spriteCanvas.getContext('2d') : null;
 
-      const keyframesName = `cipSpriteAnim_${uid}`;
-      const styleEl = document.createElement('style');
-      styleEl.textContent = `@keyframes ${keyframesName} { 0% { background-position: 0% 0%; } 100% { background-position: 100% 0%; } }`;
-      document.head.appendChild(styleEl);
-
-      const cleanupStyle = () => {
+      const getStageBgColor = () => {
         try {
-          if (styleEl && styleEl.parentNode) styleEl.parentNode.removeChild(styleEl);
+          const root = document.documentElement;
+          const cs = getComputedStyle(root);
+          const v = (cs.getPropertyValue('--psy-task-bg') || cs.getPropertyValue('--psy-bg') || '').trim();
+          if (v) return v;
+        } catch {
+          // ignore
+        }
+        try {
+          return getComputedStyle(document.body).backgroundColor || 'transparent';
+        } catch {
+          return 'transparent';
+        }
+      };
+
+      const stageBgColor = getStageBgColor();
+
+      const drawFill = () => {
+        if (!spriteCtx) return;
+        try {
+          spriteCtx.save();
+          spriteCtx.setTransform(1, 0, 0, 1, 0, 0);
+          spriteCtx.globalCompositeOperation = 'source-over';
+          spriteCtx.fillStyle = stageBgColor;
+          spriteCtx.fillRect(0, 0, spriteCanvas.width, spriteCanvas.height);
+          spriteCtx.restore();
         } catch {
           // ignore
         }
       };
+
+      const drawContain = (img) => {
+        if (!spriteCtx || !img) return;
+        const cw = spriteCanvas.width || 0;
+        const ch = spriteCanvas.height || 0;
+        const iw = img.naturalWidth || img.width || 0;
+        const ih = img.naturalHeight || img.height || 0;
+        if (!(cw > 0) || !(ch > 0) || !(iw > 0) || !(ih > 0)) return;
+
+        const s = Math.min(cw / iw, ch / ih);
+        const dw = Math.max(1, Math.round(iw * s));
+        const dh = Math.max(1, Math.round(ih * s));
+        const dx = Math.round((cw - dw) / 2);
+        const dy = Math.round((ch - dh) / 2);
+
+        try {
+          drawFill();
+          spriteCtx.drawImage(img, 0, 0, iw, ih, dx, dy, dw, dh);
+        } catch {
+          // ignore
+        }
+      };
+
+      const promptText = `Press ${choices.map(k => (k === ' ' ? 'space' : k)).join(' / ')}`;
+      promptEl.textContent = promptText;
+
+      const cleanupStyle = () => { };
 
       const setStageSizeFromDims = (w, h) => {
         const width = Number(w);
@@ -208,43 +255,126 @@
         const dispW = Math.max(1, Math.floor(width * scale));
         const dispH = Math.max(1, Math.floor(height * scale));
 
-        spriteEl.style.width = `${dispW}px`;
-        spriteEl.style.height = `${dispH}px`;
+        // Canvas: keep drawing buffer at native frame size; scale with CSS.
+        try {
+          spriteCanvas.width = Math.max(1, Math.floor(width));
+          spriteCanvas.height = Math.max(1, Math.floor(height));
+        } catch {
+          // ignore
+        }
+        spriteCanvas.style.width = `${dispW}px`;
+        spriteCanvas.style.height = `${dispH}px`;
         imgEl.style.width = `${dispW}px`;
         imgEl.style.height = `${dispH}px`;
       };
 
-      const playSprite = (url) => {
+      const inferSpriteLayout = (spriteW, spriteH, frames, targetW, targetH) => {
+        const fw = Number(spriteW);
+        const fh = Number(spriteH);
+        const fr = Number(frames);
+        const tw = Number(targetW);
+        const th = Number(targetH);
+
+        const canH = (fr > 0) && (fw > 0) && (fh > 0) && (fw % fr === 0);
+        const canV = (fr > 0) && (fw > 0) && (fh > 0) && (fh % fr === 0);
+
+        const horiz = canH ? { layout: 'h', frameW: Math.floor(fw / fr), frameH: fh } : null;
+        const vert = canV ? { layout: 'v', frameW: fw, frameH: Math.floor(fh / fr) } : null;
+
+        if (horiz && vert && (tw > 0) && (th > 0)) {
+          const errH = Math.abs(horiz.frameW - tw) + Math.abs(horiz.frameH - th);
+          const errV = Math.abs(vert.frameW - tw) + Math.abs(vert.frameH - th);
+          return errV < errH ? vert : horiz;
+        }
+
+        if (horiz && !vert) return horiz;
+        if (vert && !horiz) return vert;
+        if (horiz && vert) {
+          // Heuristic: choose the one with the larger frame area.
+          return (horiz.frameW * horiz.frameH) >= (vert.frameW * vert.frameH) ? horiz : vert;
+        }
+
+        // Fallback: assume horizontal (existing behavior)
+        if (fw > 0 && fh > 0 && fr > 0) return { layout: 'h', frameW: Math.max(1, Math.floor(fw / fr)), frameH: fh };
+        return { layout: 'h', frameW: null, frameH: null };
+      };
+
+      const playSprite = (spriteImg, layout) => {
         return new Promise((resolve) => {
-          if (!url || transMs <= 0 || frames <= 1) {
+          if (!spriteImg || transMs <= 0 || frames <= 1) {
             resolve();
             return;
           }
 
-          spriteEl.style.display = 'block';
+          if (!spriteCtx) {
+            resolve();
+            return;
+          }
+
+          spriteCanvas.style.display = 'block';
           imgEl.style.display = 'none';
 
-          spriteEl.style.backgroundImage = `url('${url.replaceAll("'", "%27")}')`;
-          spriteEl.style.backgroundSize = `${frames * 100}% 100%`;
-          spriteEl.style.backgroundPosition = '0% 0%';
-
-          // Force reflow so animation reliably restarts.
-          void spriteEl.offsetWidth;
-
-          spriteEl.style.animation = `${keyframesName} ${transMs}ms steps(${frames}) 1 forwards`;
-
-          this.jsPsych.pluginAPI.setTimeout(() => {
-            spriteEl.style.animation = '';
+          const isVert = layout === 'v';
+          const sw = spriteImg.naturalWidth || spriteImg.width || 0;
+          const sh = spriteImg.naturalHeight || spriteImg.height || 0;
+          const frameW = isVert ? sw : Math.floor(sw / frames);
+          const frameH = isVert ? Math.floor(sh / frames) : sh;
+          if (!(frameW > 0) || !(frameH > 0)) {
             resolve();
-          }, transMs);
+            return;
+          }
+
+          // Ensure stage is sized to this sprite's frame geometry.
+          setStageSizeFromDims(frameW, frameH);
+
+          const drawFrame = (k) => {
+            const i = Math.max(0, Math.min(frames - 1, k));
+            const sx = isVert ? 0 : (i * frameW);
+            const sy = isVert ? (i * frameH) : 0;
+            try {
+              drawFill();
+              spriteCtx.drawImage(spriteImg, sx, sy, frameW, frameH, 0, 0, spriteCanvas.width, spriteCanvas.height);
+            } catch {
+              // ignore
+            }
+          };
+
+          const t0 = nowMs();
+          const tick = () => {
+            if (ended) {
+              resolve();
+              return;
+            }
+            const t = nowMs() - t0;
+            const frac = transMs > 0 ? Math.min(1, Math.max(0, t / transMs)) : 1;
+            const k = Math.min(frames - 1, Math.floor(frac * frames));
+            drawFrame(k);
+            if (t >= transMs) {
+              drawFrame(frames - 1);
+              resolve();
+              return;
+            }
+            requestAnimationFrame(tick);
+          };
+
+          drawFrame(0);
+          requestAnimationFrame(tick);
         });
       };
 
-      const showImageAndCollect = () => {
+      const showImageAndCollect = (imageImg) => {
         return new Promise((resolve) => {
-          spriteEl.style.display = 'none';
-          imgEl.style.display = 'block';
-          imgEl.src = imageUrl;
+          spriteCanvas.style.display = 'block';
+          imgEl.style.display = 'none';
+
+          if (imageImg) {
+            if (!(spriteCanvas.width > 0) || !(spriteCanvas.height > 0)) {
+              const iw = imageImg.naturalWidth || imageImg.width || 0;
+              const ih = imageImg.naturalHeight || imageImg.height || 0;
+              if (iw > 0 && ih > 0) setStageSizeFromDims(iw, ih);
+            }
+            drawContain(imageImg);
+          }
 
           if (!(imgMs > 0)) {
             endedReason = responded ? 'response' : 'timeout';
@@ -300,23 +430,36 @@
 
       const run = async () => {
         try {
-          // Preload to get dimensions and reduce flicker.
-          const img0 = await preloadImage(imageUrl);
-          if (img0 && img0.naturalWidth && img0.naturalHeight) {
-            setStageSizeFromDims(img0.naturalWidth, img0.naturalHeight);
-          }
+          // Preload sprites first so we can set a stable stage size even if stimulus images have
+          // varying dimensions (wide panoramas would otherwise shrink the stage into a strip).
+          let spriteLayout = 'h';
+          let spriteFrameW = null;
+          let spriteFrameH = null;
 
-          // If we don't have stimulus dimensions, try sprites.
-          if ((!img0 || !img0.naturalWidth) && m2iUrl) {
-            const s = await preloadImage(m2iUrl);
-            if (s && s.naturalWidth && s.naturalHeight && frames > 0) {
-              setStageSizeFromDims(Math.floor(s.naturalWidth / frames), s.naturalHeight);
+          const m2iImg = m2iUrl ? await preloadImage(m2iUrl) : null;
+          const i2mImg = i2mUrl ? await preloadImage(i2mUrl) : null;
+
+          const primarySpriteImg = m2iImg || i2mImg;
+          if (primarySpriteImg && primarySpriteImg.naturalWidth && primarySpriteImg.naturalHeight && frames > 0) {
+            const inferred = inferSpriteLayout(primarySpriteImg.naturalWidth, primarySpriteImg.naturalHeight, frames, null, null);
+            spriteLayout = inferred.layout || 'h';
+            spriteFrameW = inferred.frameW || null;
+            spriteFrameH = inferred.frameH || null;
+            if (spriteFrameW && spriteFrameH) {
+              setStageSizeFromDims(spriteFrameW, spriteFrameH);
             }
           }
 
-          await playSprite(m2iUrl);
-          await showImageAndCollect();
-          await playSprite(i2mUrl);
+          // Preload stimulus image to reduce flicker. If we don't have sprite dims, fall back to
+          // the stimulus image dimensions for stage sizing.
+          const img0 = await preloadImage(imageUrl);
+          if ((!spriteFrameW || !spriteFrameH) && img0 && img0.naturalWidth && img0.naturalHeight) {
+            setStageSizeFromDims(img0.naturalWidth, img0.naturalHeight);
+          }
+
+          await playSprite(m2iImg, spriteLayout);
+          await showImageAndCollect(img0);
+          await playSprite(i2mImg, spriteLayout);
 
           cleanupStyle();
           endTrial();

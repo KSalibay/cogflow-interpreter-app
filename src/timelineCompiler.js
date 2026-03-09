@@ -556,12 +556,26 @@
       const out = [];
       for (let i = 0; i < chosenIndices.length; i++) {
         const idx = chosenIndices[i];
+
+        const pickSpriteUrl = (list) => {
+          if (!Array.isArray(list) || list.length === 0) return null;
+          if (list.length === 1) return list[0] || null;
+          // If Builder exported sprites per *source asset* (aligned with imageUrls order)
+          if (list.length === imageUrls.length) return list[idx] || null;
+          // If Builder exported sprites per *generated trial* (aligned with chosenIndices order)
+          if (list.length === chosenIndices.length) return list[i] || null;
+          // Fallback: prefer trial index if available, otherwise source index.
+          if (i >= 0 && i < list.length) return list[i] || null;
+          if (idx >= 0 && idx < list.length) return list[idx] || null;
+          return null;
+        };
+
         out.push({
           type: 'continuous-image-presentation',
           image_url: imageUrls[idx] || '',
           asset_filename: filenames[idx] || '',
-          mask_to_image_sprite_url: m2iUrls[idx] || null,
-          image_to_mask_sprite_url: i2mUrls[idx] || null,
+          mask_to_image_sprite_url: pickSpriteUrl(m2iUrls),
+          image_to_mask_sprite_url: pickSpriteUrl(i2mUrls),
           transition_frames: transitionFrames,
           image_duration_ms: imageDurationMs,
           transition_duration_ms: transitionDurationMs,

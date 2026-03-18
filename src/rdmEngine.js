@@ -94,6 +94,8 @@
       this.frameCount = 0;
       this.dots = [];
       this.rng = Math.random;
+      this.arrowDirectionDeg = null;
+      this.arrowColor = null;
 
       this._init();
     }
@@ -522,6 +524,66 @@
         ctx.stroke();
         ctx.restore();
       }
+
+      // Feedback arrow (optional)
+      if (this.arrowDirectionDeg !== null && this.arrowColor !== null) {
+        this._drawFeedbackArrow();
+      }
+    }
+
+    _drawFeedbackArrow() {
+      const ctx = this.ctx;
+      const angle = this.arrowDirectionDeg;
+      const theta = (angle * Math.PI) / 180;
+
+      ctx.save();
+      ctx.strokeStyle = this.arrowColor;
+      ctx.fillStyle = this.arrowColor;
+      ctx.lineWidth = 3.5;
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+
+      const apertureR = this.apertureShape === 'circle' ? this.apertureRadius : (this.apertureSize / 2);
+      const outerOffset = 18;
+      const innerInset = 6;
+
+      // Direction unit vector
+      const ux = Math.cos(theta);
+      const uy = Math.sin(theta);
+
+      // Outer point (outside aperture) and inner point (inside aperture)
+      const x1 = this.centerX - ux * (apertureR + outerOffset);
+      const y1 = this.centerY - uy * (apertureR + outerOffset);
+      const x2 = this.centerX - ux * (apertureR - innerInset);
+      const y2 = this.centerY - uy * (apertureR - innerInset);
+
+      // Draw arrow line
+      ctx.beginPath();
+      ctx.moveTo(x1, y1);
+      ctx.lineTo(x2, y2);
+      ctx.stroke();
+
+      // Draw arrowhead at x2,y2
+      const arrowSize = 8;
+      const anglePerp = theta + Math.PI / 2;
+      const uperp = Math.cos(anglePerp);
+      const vperp = Math.sin(anglePerp);
+
+      const ax = x2 - ux * arrowSize;
+      const ay = y2 - uy * arrowSize;
+
+      ctx.beginPath();
+      ctx.moveTo(x2, y2);
+      ctx.lineTo(ax + uperp * (arrowSize * 0.5), ay + vperp * (arrowSize * 0.5));
+      ctx.lineTo(ax - uperp * (arrowSize * 0.5), ay - vperp * (arrowSize * 0.5));
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+
+      // Clear arrow after rendering (one-shot)
+      this.arrowDirectionDeg = null;
+      this.arrowColor = null;
     }
 
     static computeCorrectSide(rdmParams) {

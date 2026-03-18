@@ -631,21 +631,57 @@
     // Gabor QUEST blocks export values.adaptive = { mode:'quest', parameter: ... }
     if (baseType === 'gabor-trial' && isObject(values.adaptive) && (values.adaptive.mode || '').toString() === 'quest') {
       const a = values.adaptive;
+      const questParam = (a.parameter || 'target_tilt_deg').toString();
       adaptiveMeta = {
         mode: 'quest',
-        parameter: (a.parameter || 'target_tilt_deg').toString()
+        parameter: questParam
       };
 
-      // If min/max not provided, try to infer from block windows.
-      const inferredMin = (adaptiveMeta.parameter in windows && isObject(windows[adaptiveMeta.parameter])) ? Number(windows[adaptiveMeta.parameter].min) : undefined;
-      const inferredMax = (adaptiveMeta.parameter in windows && isObject(windows[adaptiveMeta.parameter])) ? Number(windows[adaptiveMeta.parameter].max) : undefined;
+      // Contrast is inherently bounded 0-1; tilt defaults stay as-is.
+      if (questParam === 'contrast') {
+        adaptiveMeta.minValue = Number.isFinite(Number(a.min_value)) ? Number(a.min_value) : 0;
+        adaptiveMeta.maxValue = Number.isFinite(Number(a.max_value)) ? Number(a.max_value) : 1;
+      }
 
-      staircase = new QuestStaircase({
+      // If min/max not provided, try to infer from block windows.
+      const inferredMin = (questParam in windows && isObject(windows[questParam])) ? Number(windows[questParam].min) : undefined;
+      const inferredMax = (questParam in windows && isObject(windows[questParam])) ? Number(windows[questParam].max) : undefined;
+
+      const questOpts = {
         ...a,
-        parameter: adaptiveMeta.parameter,
+        parameter: questParam,
         ...(Number.isFinite(inferredMin) && a.min_value === undefined ? { min_value: inferredMin } : {}),
         ...(Number.isFinite(inferredMax) && a.max_value === undefined ? { max_value: inferredMax } : {})
-      });
+      };
+
+      // Coarse/fine phase support
+      const trialsCoarse = Number.isFinite(Number(a.quest_trials_coarse ?? values.quest_trials_coarse))
+        ? Math.max(0, Math.round(Number(a.quest_trials_coarse ?? values.quest_trials_coarse)))
+        : 0;
+      const trialsFine = Number.isFinite(Number(a.quest_trials_fine ?? values.quest_trials_fine))
+        ? Math.max(0, Math.round(Number(a.quest_trials_fine ?? values.quest_trials_fine)))
+        : 0;
+      adaptiveMeta.trialsCoarse = trialsCoarse;
+      adaptiveMeta.trialsFine = trialsFine;
+
+      // Per-location staircase support
+      const perLocation = !!(a.staircase_per_location ?? values.quest_staircase_per_location);
+      adaptiveMeta.perLocation = perLocation;
+
+      // Store thresholds to window.cogflowState
+      const storeThreshold = !!(a.store_location_threshold ?? values.quest_store_location_threshold);
+      adaptiveMeta.storeThreshold = storeThreshold;
+
+      if (perLocation) {
+        adaptiveMeta.staircaseLeft = new QuestStaircase(questOpts);
+        adaptiveMeta.staircaseRight = new QuestStaircase(questOpts);
+        staircase = adaptiveMeta.staircaseLeft; // default; on_start will pick per trial
+      } else {
+        staircase = new QuestStaircase(questOpts);
+      }
+
+      adaptiveMeta.phaseTrialCount = 0;
+      adaptiveMeta.totalTrialCount = 0;
     }
 
     // RDM adaptive blocks (builder exports: windows.initial_coherence, windows.step_size, values.algorithm)
@@ -971,18 +1007,27 @@
         // previous trials can influence the next trial. Precomputing values here would
         // freeze the staircase.
         let realizedAdaptiveValue = null;
+        let activeStaircase = staircase;
 
         // Attach hooks (compiler will carry these into jsPsych trials).
         t.on_start = (trial) => {
+          // Per-location: pick the right staircase for this trial's target side.
+          if (adaptiveMeta.perLocation && adaptiveMeta.staircaseLeft && adaptiveMeta.staircaseRight) {
+            const loc = (trial.target_location || '').toString().toLowerCase();
+            activeStaircase = (loc === 'right') ? adaptiveMeta.staircaseRight : adaptiveMeta.staircaseLeft;
+          } else {
+            activeStaircase = staircase;
+          }
+
           // If the parameter was already set by values/windows, adaptive should win.
           // For target_tilt_deg, QUEST adapts magnitude but we randomize sign for discriminate_tilt.
           let val;
           if (p === 'target_tilt_deg') {
-            const mag = Math.abs(Number(staircase.next()));
+            const mag = Math.abs(Number(activeStaircase.next()));
             const sign = rng() < 0.5 ? -1 : 1;
             val = sign * mag;
           } else {
-            val = staircase.next();
+            val = activeStaircase.next();
           }
 
           realizedAdaptiveValue = val;
@@ -1014,7 +1059,43 @@
             isCorrect = (data.response_side !== null && data.response_side === data.correct_side);
           }
 
-          staircase.update(isCorrect);
+          activeStaircase.update(isCorrect);
+          adaptiveMeta.phaseTrialCount += 1;
+          adaptiveMeta.totalTrialCount += 1;
+
+          // Coarse → fine phase transition: reinitialize with tighter SD around current mean.
+          if (adaptiveMeta.trialsCoarse > 0 && adaptiveMeta.phaseTrialCount === adaptiveMeta.trialsCoarse) {
+            const reinit = (sc) => {
+              const currentMean = sc.meanThreshold();
+              const origSd = Number.isFinite(Number(questOpts.start_sd)) ? Number(questOpts.start_sd) : 20;
+              return new QuestStaircase({
+                ...questOpts,
+                start_value: currentMean,
+                start_sd: Math.max(0.5, origSd * 0.4)
+              });
+            };
+            if (adaptiveMeta.perLocation) {
+              adaptiveMeta.staircaseLeft = reinit(adaptiveMeta.staircaseLeft);
+              adaptiveMeta.staircaseRight = reinit(adaptiveMeta.staircaseRight);
+              staircase = adaptiveMeta.staircaseLeft;
+            } else {
+              staircase = reinit(staircase);
+            }
+          }
+
+          // Store per-location thresholds to window.cogflowState when storeThreshold is set.
+          if (adaptiveMeta.storeThreshold) {
+            try {
+              window.cogflowState = window.cogflowState || {};
+              window.cogflowState.gabor_thresholds = window.cogflowState.gabor_thresholds || {};
+              if (adaptiveMeta.perLocation) {
+                window.cogflowState.gabor_thresholds.left = adaptiveMeta.staircaseLeft.meanThreshold();
+                window.cogflowState.gabor_thresholds.right = adaptiveMeta.staircaseRight.meanThreshold();
+              } else {
+                window.cogflowState.gabor_thresholds.combined = staircase.meanThreshold();
+              }
+            } catch { /* ignore */ }
+          }
 
           // Keep the realized adaptive value on the data for analysis.
           if (data && typeof data === 'object') {
@@ -1252,7 +1333,8 @@
     const preserveNbackBlocks = (experimentType === 'continuous' && taskType === 'nback');
     const preserveBlocksFor = [
       ...(preservePvtBlocks ? ['pvt-trial'] : []),
-      ...(preserveNbackBlocks ? ['nback-block', 'nback', 'nback-trial-sequence'] : [])
+      ...(preserveNbackBlocks ? ['nback-block', 'nback', 'nback-trial-sequence'] : []),
+      'gabor-learning'
     ];
 
     const expandedRaw = expandTimeline(config.timeline, {
@@ -2697,6 +2779,77 @@
           data: { plugin_type: 'nback-continuous', task_type: 'nback', original_type: type }
         };
         timeline.push(maybeWrapTrialWithRewardPopups(trial, 'nback-continuous'));
+        continue;
+      }
+
+      // Gabor learning block (loop until accuracy criterion met)
+      if (type === 'block' && (() => {
+        const bt = (typeof item.component_type === 'string' && item.component_type.trim())
+          ? item.component_type.trim()
+          : (typeof item.block_component_type === 'string' && item.block_component_type.trim())
+            ? item.block_component_type.trim()
+            : '';
+        return bt === 'gabor-learning';
+      })()) {
+        const Gabor = requirePlugin('gabor (window.jsPsychGabor)', window.jsPsychGabor);
+
+        const src = (item && typeof item === 'object' && item.parameter_values && typeof item.parameter_values === 'object')
+          ? { ...item, ...item.parameter_values }
+          : (item || {});
+
+        const streakLength = Math.max(1, Number.parseInt(src.learning_streak_length ?? 20, 10) || 20);
+        const targetAccuracy = Number.isFinite(Number(src.learning_target_accuracy)) ? Number(src.learning_target_accuracy) : 0.9;
+        const maxTrials = Math.max(1, Number.parseInt(src.learning_max_trials ?? 200, 10) || 200);
+        const showFeedback = src.show_feedback !== false;
+        const feedbackDurationMs = Math.max(0, Number(src.feedback_duration_ms ?? 800) || 0);
+
+        const gLearningState = { trialCount: 0, history: [] };
+
+        const trialTemplate = {
+          type: Gabor,
+          ...gaborDefaults,
+
+          on_start: (trial) => {
+            // Apply all block param values at runtime; allow fall-through to gaborDefaults above.
+            for (const [k, v] of Object.entries(src)) {
+              if (
+                k === 'learning_streak_length' || k === 'learning_target_accuracy' ||
+                k === 'learning_max_trials' || k === 'show_feedback' ||
+                k === 'feedback_duration_ms' || k === 'block_component_type' ||
+                k === 'component_type' || k === 'block_length' || k === 'type'
+              ) continue;
+              if (trial[k] === undefined) trial[k] = v;
+            }
+            trial.show_feedback = showFeedback;
+            trial.feedback_duration_ms = feedbackDurationMs;
+            trial.data = {
+              plugin_type: 'gabor-trial',
+              task_type: 'gabor',
+              gabor_learning_block: true,
+              gabor_learning_trial: gLearningState.trialCount
+            };
+          },
+
+          on_finish: (data) => {
+            gLearningState.trialCount += 1;
+            const correct = (data && (data.correctness === true || data.correct === true));
+            gLearningState.history.push(correct ? 1 : 0);
+            if (gLearningState.history.length > streakLength) {
+              gLearningState.history.shift();
+            }
+          }
+        };
+
+        timeline.push({
+          timeline: [trialTemplate],
+          loop_function: () => {
+            if (gLearningState.trialCount >= maxTrials) return false;
+            if (gLearningState.history.length < streakLength) return true;
+            const acc = gLearningState.history.reduce((a, b) => a + b, 0) / streakLength;
+            return acc < targetAccuracy;
+          },
+          data: { plugin_type: 'gabor-learning', task_type: 'gabor' }
+        });
         continue;
       }
 

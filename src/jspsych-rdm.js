@@ -118,6 +118,29 @@ var jsPsychRdm = (function (jspsych) {
     };
   }
 
+  function normalizeAngleDeg(raw) {
+    const a = Number(raw);
+    if (!Number.isFinite(a)) return 0;
+    return ((a % 360) + 360) % 360;
+  }
+
+  function getCorrectDirectionDeg(rdmParams) {
+    const p = rdmParams || {};
+
+    if ((p.type === 'rdm-dot-groups') || p.group_1_direction !== undefined || p.group_2_direction !== undefined) {
+      let group = Number(p.response_target_group);
+      if (group !== 1 && group !== 2) {
+        const c1 = Number(p.group_1_coherence ?? 0);
+        const c2 = Number(p.group_2_coherence ?? 0);
+        group = (c1 >= c2) ? 1 : 2;
+      }
+      const dir = (group === 1) ? Number(p.group_1_direction ?? 0) : Number(p.group_2_direction ?? 180);
+      return normalizeAngleDeg(dir);
+    }
+
+    return normalizeAngleDeg(Number(p.direction ?? p.coherent_direction ?? 0));
+  }
+
   class JsPsychRdmPlugin {
     constructor(jsPsych) {
       this.jsPsych = jsPsych;
@@ -265,7 +288,13 @@ var jsPsychRdm = (function (jspsych) {
             <span style="opacity:0.7">${responseSide || ''}</span>
           </div>`;
         } else if (fb.type === 'arrow') {
-          el.innerHTML = `<div style="width: ${canvasW}px; text-align:center; font-size: 20px; color:${isCorrect ? '#5CFF8A' : '#FF5C5C'};">${isCorrect ? '✓' : '✗'}</div>`;
+          const directionDeg = getCorrectDirectionDeg(rdm);
+          const arrowColor = isCorrect ? '#5CFF8A' : '#FF5C5C';
+          if (engine) {
+            engine.arrowDirectionDeg = directionDeg;
+            engine.arrowColor = arrowColor;
+          }
+          el.innerHTML = `<div style="width: ${canvasW}px; text-align:center; opacity:0.85; font-size:12px;">Arrow: ${Math.round(directionDeg)}°</div>`;
         } else if (fb.type === 'custom') {
           el.innerHTML = `<div style="width: ${canvasW}px; text-align:center; opacity:0.85;">(custom feedback placeholder)</div>`;
         }

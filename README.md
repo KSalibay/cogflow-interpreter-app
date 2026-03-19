@@ -14,6 +14,7 @@ Static runtime that loads a CogFlow Builder export and runs it via jsPsych.
 - [Config loading modes](#config-loading-modes)
 - [Quick start (local)](#quick-start-local)
 - [Debugging and validation flags](#debugging-and-validation-flags)
+- [Gabor Cue-Contingent Learning and Reward Metadata](#gabor-cue-contingent-learning-and-reward-metadata)
 - [Supported tasks and component types](#supported-tasks-and-timeline-component-types)
 - [Special paradigms](#special-paradigms)
 - [Trial-based tasks](#trial-based-tasks)
@@ -174,6 +175,30 @@ Gabor-specific debug:
 - `&gabor_debug=1` (or `&debug=1`) enforces longer stimulus/mask durations for visibility.
 - In debug mode, each stimulus patch overlays `freq=... cyc/px`.
   - If it shows `freq=0.0000`, your config likely rounded the spatial frequency somewhere upstream (common cause: treating `spatial_frequency_cyc_per_px` like a pixel integer).
+
+## Gabor Cue-Contingent Learning and Reward Metadata
+
+The runtime supports cue-coupling and reward-availability tagging for Gabor trial generation and learning loops.
+
+- Spatial cue validity coupling:
+  - Uses `spatial_cue_validity_probability` for unilateral cues (`left` / `right`).
+  - Sets per-trial `spatial_cue_valid` and flips/keeps `target_location` accordingly.
+- Value target coupling:
+  - Uses `value_target_value` (`high|low|neutral|any`) to optionally force the target side to match the selected cue value.
+- Reward availability by cue value:
+  - Uses `reward_availability_high`, `reward_availability_low`, `reward_availability_neutral`.
+  - Sets per-trial `reward_available` and `reward_availability_probability` metadata.
+
+Reward integration behavior:
+
+- If a trial carries `reward_available=false`, reward awarding is blocked for that trial even when correctness/RT criteria pass.
+
+Per-trial output includes these fields when present:
+
+- `spatial_cue_valid`
+- `value_target_value`
+- `reward_available`
+- `reward_availability_probability`
 
 ## Supported tasks and timeline component types
 

@@ -1,5 +1,34 @@
 # CogFlow Interpreter Changelog
 
+## March 20, 2026
+
+### Runtime Updates
+
+#### Gabor Cue/Target Coupling in Compiler
+- Added spatial cue validity coupling in `src/timelineCompiler.js`:
+  - Applies `spatial_cue_validity_probability` for unilateral cues.
+  - Writes per-trial `spatial_cue_valid` metadata and updates `target_location` accordingly.
+- Added value-target coupling:
+  - Uses `value_target_value` (`high|low|neutral`) to align target side with cue value.
+- Added cue-conditioned reward availability tagging:
+  - Uses `reward_availability_high`, `reward_availability_low`, `reward_availability_neutral`.
+  - Writes `reward_available` and `reward_availability_probability` per trial.
+
+#### Reward Gate and Data Output
+- Reward success logic now explicitly blocks reward when `reward_available === false`.
+- Trial event extraction now propagates `reward_available` into reward evaluation.
+- `src/jspsych-gabor.js` now persists additional trial fields when present:
+  - `spatial_cue_valid`
+  - `reward_available`
+  - `reward_availability_probability`
+  - `value_target_value`
+
+#### Gabor-Learning Trial Sampling
+- Gabor-learning block compilation now supports:
+  - Sampling from `parameter_values` arrays and `parameter_windows`
+  - Applying cue-present probabilities and cue-value policies during looped trial generation
+  - Carrying cue/reward metadata into trial data for downstream analysis
+
 ## March 19, 2026
 
 ### Visual & UX Improvements

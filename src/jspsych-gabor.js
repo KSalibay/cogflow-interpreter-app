@@ -709,6 +709,11 @@
           accuracy: correctness,
           correctness,
 
+          ...(typeof trial.spatial_cue_valid === 'boolean' ? { spatial_cue_valid: trial.spatial_cue_valid } : {}),
+          ...(typeof trial.reward_available === 'boolean' ? { reward_available: trial.reward_available } : {}),
+          ...(Number.isFinite(Number(trial.reward_availability_probability)) ? { reward_availability_probability: Number(trial.reward_availability_probability) } : {}),
+          ...(typeof trial.value_target_value === 'string' && trial.value_target_value.trim() !== '' ? { value_target_value: trial.value_target_value } : {}),
+
           ...(drtEnabled ? { drt_enabled: true, drt_shown: drtShown, drt_rt_ms: drtRt } : {})
         };
 

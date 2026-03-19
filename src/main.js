@@ -1864,6 +1864,30 @@
           ? JSON.stringify(buildResultSummary({ payload, uploadedFile: uploadAttempt }), null, 2)
           : payloadJson;
 
+        // Day 4: Platform backend (enabled when window.COGFLOW_PLATFORM_URL is set).
+        // Feature-flagged: falls through to JATOS path when not configured.
+        if (window.DjangoRuntimeBackend && window.DjangoRuntimeBackend.isEnabled()) {
+          try {
+            const studySlug = (
+              (typeof window.COGFLOW_STUDY_SLUG === 'string' && window.COGFLOW_STUDY_SLUG.trim()) ||
+              (typeof configId === 'string' && configId.trim()) ||
+              'unknown'
+            );
+            const participantId = (
+              (typeof window.COGFLOW_PARTICIPANT_ID === 'string' && window.COGFLOW_PARTICIPANT_ID.trim()) ||
+              getQueryParam('code') ||
+              null
+            );
+            await window.DjangoRuntimeBackend.startRun(studySlug, participantId);
+            await window.DjangoRuntimeBackend.submitResult(payload);
+            renderBlockingStatus('Submitted to Platform', 'Results saved to CogFlow Platform.');
+          } catch (e) {
+            console.error('[DjangoRuntimeBackend]', e);
+            renderBlockingStatus('Platform submit failed', e && e.message ? e.message : String(e));
+          }
+          return;
+        }
+
         if (await submitToJatosAndContinue(dataJson)) return;
 
         // Local debug: optionally auto-download the exact payload that would be sent to JATOS.
@@ -2249,6 +2273,30 @@
         const dataJson = (uploadAttempt && uploadAttempt.ok === true)
           ? JSON.stringify(buildResultSummary({ payload, uploadedFile: uploadAttempt }), null, 2)
           : payloadJson;
+
+        // Day 4: Platform backend (enabled when window.COGFLOW_PLATFORM_URL is set).
+        // Feature-flagged: falls through to JATOS path when not configured.
+        if (window.DjangoRuntimeBackend && window.DjangoRuntimeBackend.isEnabled()) {
+          try {
+            const studySlug = (
+              (typeof window.COGFLOW_STUDY_SLUG === 'string' && window.COGFLOW_STUDY_SLUG.trim()) ||
+              (typeof code === 'string' && code.trim()) ||
+              'unknown'
+            );
+            const participantId = (
+              (typeof window.COGFLOW_PARTICIPANT_ID === 'string' && window.COGFLOW_PARTICIPANT_ID.trim()) ||
+              getQueryParam('code') ||
+              null
+            );
+            await window.DjangoRuntimeBackend.startRun(studySlug, participantId);
+            await window.DjangoRuntimeBackend.submitResult(payload);
+            renderBlockingStatus('Submitted to Platform', 'Results saved to CogFlow Platform.');
+          } catch (e) {
+            console.error('[DjangoRuntimeBackend]', e);
+            renderBlockingStatus('Platform submit failed', e && e.message ? e.message : String(e));
+          }
+          return;
+        }
 
         if (await submitToJatosAndContinue(dataJson)) return;
 

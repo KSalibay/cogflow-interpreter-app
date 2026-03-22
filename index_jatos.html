@@ -232,6 +232,9 @@
 
   <!-- Interpreter runtime -->
   <script>
+    // Filled by platform-hosted builds; left blank for standalone/JATOS runs.
+    window.COGFLOW_PLATFORM_URL = '';
+
     // Demo default: Token Store (Cloudflare Worker) base URL.
     // For distribution: change this value (or remove to rely on JATOS component properties).
     window.COGFLOW_TOKEN_STORE_BASE_URL = 'https://cool-star-379d.kami-salibayeva.workers.dev';
@@ -273,6 +276,7 @@
         'src/jspsych-simon.js?v=20260218',
         'src/jspsych-task-switching.js?v=20260306-3',
         'src/jspsych-pvt.js?v=20260219',
+        'src/jspsych-mot.js?v=20260323-1',
         'src/jspsych-nback.js?v=20260222',
         'src/jspsych-nback-continuous.js?v=20260222',
         'src/jspsych-visual-angle-calibration.js?v=20260210',
@@ -280,6 +284,7 @@
         'src/eyeTrackingWebgazer.js?v=20260207',
         'src/configLoader.js?v=20260207',
         'src/timelineCompiler.js?v=20260305-2',
+        'src/djangoRuntimeBackend.js',
         'src/main.js?v=20260309-1'
       ];
 

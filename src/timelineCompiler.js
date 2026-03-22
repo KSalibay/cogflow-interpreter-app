@@ -2779,6 +2779,20 @@
         continue;
       }
 
+      // MOT task
+      if (type === 'mot-trial') {
+        const Mot = requirePlugin('mot (window.jsPsychMot)', window.jsPsychMot);
+        const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, type);
+        const trial = {
+          ...item,
+          type: Mot,
+          ...(onFinish ? { on_finish: onFinish } : {}),
+          data: { plugin_type: type, task_type: 'mot' }
+        };
+        timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
+        continue;
+      }
+
       // Continuous Image Presentation (one data row per image)
       if (type === 'continuous-image-presentation') {
         const Cip = requirePlugin(

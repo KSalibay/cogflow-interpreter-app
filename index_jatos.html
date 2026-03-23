@@ -177,6 +177,37 @@
       border-color: rgba(0, 0, 0, 0.0);
       color: var(--cf-ash-grey);
     }
+
+    /* ── Eye-tracking calibration dot screen ─────────────────────────── */
+    .psy-fullscreen {
+      position: relative;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh;
+      background: var(--psy-bg);
+      color: var(--psy-fg);
+      overflow: hidden;
+    }
+    .psy-calibration-dot {
+      position: absolute;
+      transform: translate(-50%, -50%);
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--psy-accent);
+      box-shadow: 0 0 0 6px rgba(255, 59, 59, 0.25);
+    }
+    html[data-psy-theme="light"] .psy-calibration-dot {
+      box-shadow: 0 0 0 6px rgba(217, 28, 28, 0.20);
+    }
+    .psy-bottom-hint {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 24px;
+      text-align: center;
+      opacity: 0.9;
+    }
   </style>
 </head>
 <body>
@@ -284,7 +315,6 @@
         'src/eyeTrackingWebgazer.js?v=20260207',
         'src/configLoader.js?v=20260207',
         'src/timelineCompiler.js?v=20260305-2',
-        'src/djangoRuntimeBackend.js',
         'src/main.js?v=20260309-1'
       ];
 

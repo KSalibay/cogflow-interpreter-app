@@ -61,6 +61,15 @@
       patch_border_color: { type: PT.STRING, default: '#ffffff' },
       patch_border_opacity: { type: PT.FLOAT, default: 0.22 },
 
+      // Grating contrast (0–1)
+      contrast: { type: PT.FLOAT, default: 0.95 },
+
+      // Post-trial feedback
+      show_feedback: { type: PT.BOOL, default: false },
+      feedback_duration_ms: { type: PT.INT, default: 800 },
+      feedback_text_correct: { type: PT.STRING, default: 'Correct' },
+      feedback_text_incorrect: { type: PT.STRING, default: 'Incorrect' },
+
       detection_response_task_enabled: { type: PT.BOOL, default: false }
     },
     data: {
@@ -199,20 +208,62 @@
     ctx.restore();
   }
 
-  function drawCueArrow(ctx, x, y, spatialCue) {
-    const cueText = (spatialCue === 'left') ? '←'
-      : (spatialCue === 'right') ? '→'
-      : (spatialCue === 'both') ? '↔'
-      : '';
+  function drawCueDiamond(ctx, x, y, spatialCue) {
+    if (!spatialCue || spatialCue === 'none') return;
+
+    const size = 64;
+    const half = size / 2;
 
     ctx.save();
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    if (cueText) {
-      ctx.fillStyle = 'rgba(255,255,255,0.9)';
-      ctx.font = '48px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial';
-      ctx.fillText(cueText, x, y);
+
+    // Clip all fill variants to the diamond silhouette.
+    ctx.beginPath();
+    ctx.moveTo(x, y - half);
+    ctx.lineTo(x + half, y);
+    ctx.lineTo(x, y + half);
+    ctx.lineTo(x - half, y);
+    ctx.closePath();
+    ctx.clip();
+
+    // Fill left/right/both regions.
+    if (spatialCue === 'left') {
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.fillRect(x - half, y - half, half, size);
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(x, y - half, half, size);
+    } else if (spatialCue === 'right') {
+      ctx.fillStyle = 'rgba(255,255,255,0.18)';
+      ctx.fillRect(x - half, y - half, half, size);
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.fillRect(x, y - half, half, size);
+    } else if (spatialCue === 'both') {
+      ctx.fillStyle = 'rgba(255,255,255,0.92)';
+      ctx.fillRect(x - half, y - half, size, size);
     }
+
+    ctx.restore();
+
+    // Diamond border
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.95)';
+    ctx.lineWidth = 2.5;
+    ctx.beginPath();
+    ctx.moveTo(x, y - half);
+    ctx.lineTo(x + half, y);
+    ctx.lineTo(x, y + half);
+    ctx.lineTo(x - half, y);
+    ctx.closePath();
+    ctx.stroke();
+
+    // Fixation cross inside the cue
+    ctx.strokeStyle = 'rgba(16,16,16,0.95)';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x - 8, y);
+    ctx.lineTo(x + 8, y);
+    ctx.moveTo(x, y - 8);
+    ctx.lineTo(x, y + 8);
+    ctx.stroke();
     ctx.restore();
   }
 
@@ -307,10 +358,11 @@
     return { img, r, stats };
   }
 
-  function drawGaborPatch(ctx, centerX, centerY, sizePx, orientationDeg, { spatialFrequency, gratingWaveform, patchBorder, debug } = {}) {
+  function drawGaborPatch(ctx, centerX, centerY, sizePx, orientationDeg, { spatialFrequency, gratingWaveform, patchBorder, contrast, debug } = {}) {
     const { img, r, stats } = makeGaborImageData(ctx, sizePx, orientationDeg, {
       freq: spatialFrequency,
       waveform: gratingWaveform,
+      contrast: (Number.isFinite(Number(contrast)) ? Number(contrast) : 0.95),
       debugStats: debug === true
     });
     ctx.putImageData(img, Math.round(centerX - r), Math.round(centerY - r));
@@ -398,6 +450,7 @@
     spatialFrequency,
     gratingWaveform,
     patchBorder,
+    contrast,
     showCue,
     showStimulus,
     showMask,
@@ -423,48 +476,38 @@
     const patchSize = (provided && provided > 0)
       ? clamp(Math.round(provided), 40, Math.max(60, Math.floor(minDim * 0.85)))
       : defaultPatchSize;
-    const frameSize = patchSize + Math.floor(patchSize * 0.22);
-
     // Center stimulus vertically within the canvas.
     const cy = Math.floor(h / 2);
-    const leftCx = Math.floor(w * 0.33);
-    const rightCx = Math.floor(w * 0.67);
+    const leftCx = Math.floor(w * 0.30);
+    const rightCx = Math.floor(w * 0.70);
 
-    // Frames + placeholder circles
-    drawRoundedRectStroke(ctx, leftCx - frameSize / 2, cy - frameSize / 2, frameSize, frameSize, 18, leftFrameColor, 7);
-    drawRoundedRectStroke(ctx, rightCx - frameSize / 2, cy - frameSize / 2, frameSize, frameSize, 18, rightFrameColor, 7);
-
+    // Circular value outlines directly around each patch (no padded square frame).
+    const outlineRadius = Math.floor(patchSize / 2) - 1;
     ctx.save();
-    const phEnabled = patchBorder?.enabled !== false;
-    const phLineWidth = clamp(patchBorder?.widthPx ?? 3, 0, 50);
-    const phOpacity = clamp(patchBorder?.opacity ?? 0.18, 0, 1);
-    const phColor = (patchBorder?.color ?? '#ffffff').toString();
-    ctx.strokeStyle = toRgba(phColor, phOpacity);
-    ctx.lineWidth = phLineWidth;
+    ctx.lineWidth = 7;
+    ctx.strokeStyle = leftFrameColor;
     ctx.beginPath();
-    ctx.arc(leftCx, cy, Math.floor(patchSize / 2) - 2, 0, Math.PI * 2);
-    ctx.arc(rightCx, cy, Math.floor(patchSize / 2) - 2, 0, Math.PI * 2);
-    if (phEnabled && phLineWidth > 0 && phOpacity > 0) {
-      ctx.stroke();
-    }
+    ctx.arc(leftCx, cy, outlineRadius, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.strokeStyle = rightFrameColor;
+    ctx.beginPath();
+    ctx.arc(rightCx, cy, outlineRadius, 0, Math.PI * 2);
+    ctx.stroke();
     ctx.restore();
 
     // Cue
     if (showCue) {
-      drawCueArrow(ctx, Math.floor(w / 2), Math.floor(h * 0.22), spatialCue);
+      drawCueDiamond(ctx, Math.floor(w / 2), cy, spatialCue);
     }
 
     // Stimulus / mask
     if (showStimulus) {
-      drawGaborPatch(ctx, leftCx, cy, patchSize, leftAngle, { spatialFrequency, gratingWaveform, patchBorder, debug });
-      drawGaborPatch(ctx, rightCx, cy, patchSize, rightAngle, { spatialFrequency, gratingWaveform, patchBorder, debug });
+      drawGaborPatch(ctx, leftCx, cy, patchSize, leftAngle, { spatialFrequency, gratingWaveform, patchBorder, contrast, debug });
+      drawGaborPatch(ctx, rightCx, cy, patchSize, rightAngle, { spatialFrequency, gratingWaveform, patchBorder, contrast, debug });
     } else if (showMask) {
       drawNoiseMask(ctx, leftCx, cy, patchSize, { patchBorder });
       drawNoiseMask(ctx, rightCx, cy, patchSize, { patchBorder });
     }
-
-    // Fixation is shown in all phases
-    drawFixation(ctx, Math.floor(w / 2), cy);
 
     // Optional subtle label for debugging stages (off by default; can be enabled by CSS later)
     if (phase) {
@@ -524,6 +567,12 @@
         color: (trial.patch_border_color ?? '#ffffff').toString(),
         opacity: clamp(trial.patch_border_opacity ?? 0.22, 0, 1)
       };
+
+      const contrast = Number.isFinite(Number(trial.contrast)) ? clamp(Number(trial.contrast), 0, 1) : 0.95;
+      const showFeedback = trial.show_feedback === true;
+      const feedbackDurationMs = Math.max(0, Number(trial.feedback_duration_ms ?? 800) || 0);
+      const fbTextCorrect = (trial.feedback_text_correct ?? 'Correct').toString();
+      const fbTextIncorrect = (trial.feedback_text_incorrect ?? 'Incorrect').toString();
 
       // Optional researcher-controlled patch diameter.
       // Preferred: degrees-of-visual-angle via trial.patch_diameter_deg + prior visual-angle calibration.
@@ -638,7 +687,7 @@
           return (targetTilt < 0) ? leftKey : rightKey;
         })();
 
-        this.jsPsych.finishTrial({
+        const trialData = {
           plugin_type: 'gabor-trial',
           end_reason: reason || (responded ? 'response' : 'deadline'),
 
@@ -660,8 +709,37 @@
           accuracy: correctness,
           correctness,
 
+          ...(typeof trial.spatial_cue_valid === 'boolean' ? { spatial_cue_valid: trial.spatial_cue_valid } : {}),
+          ...(typeof trial.reward_available === 'boolean' ? { reward_available: trial.reward_available } : {}),
+          ...(Number.isFinite(Number(trial.reward_availability_probability)) ? { reward_availability_probability: Number(trial.reward_availability_probability) } : {}),
+          ...(typeof trial.value_target_value === 'string' && trial.value_target_value.trim() !== '' ? { value_target_value: trial.value_target_value } : {}),
+
           ...(drtEnabled ? { drt_enabled: true, drt_shown: drtShown, drt_rt_ms: drtRt } : {})
-        });
+        };
+
+        if (showFeedback && feedbackDurationMs > 0 && canvas) {
+          const fbCtx = canvas.getContext('2d');
+          if (fbCtx) {
+            const fbText = (correctness === true) ? fbTextCorrect : (correctness === false) ? fbTextIncorrect : '';
+            if (fbText) {
+              const cw = canvas.width;
+              const ch = canvas.height;
+              const fbColor = (correctness === true) ? '#4caf50' : '#f44336';
+              fbCtx.save();
+              fbCtx.fillStyle = 'rgba(11,11,11,0.72)';
+              fbCtx.fillRect(0, 0, cw, ch);
+              fbCtx.font = `bold ${Math.round(clamp(ch * 0.10, 28, 72))}px ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial`;
+              fbCtx.fillStyle = fbColor;
+              fbCtx.textAlign = 'center';
+              fbCtx.textBaseline = 'middle';
+              fbCtx.fillText(fbText, Math.floor(cw / 2), Math.floor(ch / 2));
+              fbCtx.restore();
+            }
+          }
+          window.setTimeout(() => { this.jsPsych.finishTrial(trialData); }, feedbackDurationMs);
+        } else {
+          this.jsPsych.finishTrial(trialData);
+        }
       };
 
       // DOM
@@ -729,6 +807,7 @@
           spatialFrequency,
           gratingWaveform,
           patchBorder,
+          contrast,
           showCue: !!opts?.showCue,
           showStimulus: !!opts?.showStimulus,
           showMask: !!opts?.showMask,

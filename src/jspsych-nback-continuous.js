@@ -239,14 +239,20 @@
       display_element.innerHTML = `
         <div class="psy-wrap">
           <div class="psy-stage">
-            <div style="width:min(900px, 100%); text-align:center;">
-              <div class="psy-muted" style="margin-bottom:8px; font-size:12px;">N-back stream · n=${esc(n)} · length=${esc(length)}</div>
-              <div id="nbackc-stim"></div>
-              <div id="nbackc-fix" style="visibility:hidden;"><div style="font-size:56px; font-weight:700; line-height:1;">+</div></div>
-              <div style="margin-top:10px;">${hintHtml}</div>
-              ${buttonsHtml}
-              <div id="nbackc-feedback" style="margin-top:12px; min-height:22px; font-weight:650;"></div>
-              <div id="nbackc-progress" style="margin-top:10px; opacity:0.6; font-size:12px;"></div>
+            <div style="width:min(900px, 100%); min-height:min(72vh, 680px); position:relative; text-align:center;">
+              <div style="position:absolute; inset:0; display:grid; place-items:center; pointer-events:none;">
+                <div style="text-align:center;">
+                  <div id="nbackc-stim"></div>
+                  <div id="nbackc-fix" style="visibility:hidden;"><div style="font-size:56px; font-weight:700; line-height:1;">+</div></div>
+                </div>
+              </div>
+              <div style="position:absolute; left:0; right:0; bottom:0; padding:10px 0 0 0;">
+                <div class="psy-muted" style="font-size:12px; margin-bottom:6px;">N-back stream · n=${esc(n)} · length=${esc(length)}</div>
+                <div>${hintHtml}</div>
+                ${buttonsHtml}
+                <div id="nbackc-feedback" style="margin-top:12px; min-height:22px; font-weight:650;"></div>
+                <div id="nbackc-progress" style="margin-top:10px; opacity:0.6; font-size:12px;"></div>
+              </div>
             </div>
           </div>
         </div>

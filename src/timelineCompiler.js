@@ -631,21 +631,57 @@
     // Gabor QUEST blocks export values.adaptive = { mode:'quest', parameter: ... }
     if (baseType === 'gabor-trial' && isObject(values.adaptive) && (values.adaptive.mode || '').toString() === 'quest') {
       const a = values.adaptive;
+      const questParam = (a.parameter || 'target_tilt_deg').toString();
       adaptiveMeta = {
         mode: 'quest',
-        parameter: (a.parameter || 'target_tilt_deg').toString()
+        parameter: questParam
       };
 
-      // If min/max not provided, try to infer from block windows.
-      const inferredMin = (adaptiveMeta.parameter in windows && isObject(windows[adaptiveMeta.parameter])) ? Number(windows[adaptiveMeta.parameter].min) : undefined;
-      const inferredMax = (adaptiveMeta.parameter in windows && isObject(windows[adaptiveMeta.parameter])) ? Number(windows[adaptiveMeta.parameter].max) : undefined;
+      // Contrast is inherently bounded 0-1; tilt defaults stay as-is.
+      if (questParam === 'contrast') {
+        adaptiveMeta.minValue = Number.isFinite(Number(a.min_value)) ? Number(a.min_value) : 0;
+        adaptiveMeta.maxValue = Number.isFinite(Number(a.max_value)) ? Number(a.max_value) : 1;
+      }
 
-      staircase = new QuestStaircase({
+      // If min/max not provided, try to infer from block windows.
+      const inferredMin = (questParam in windows && isObject(windows[questParam])) ? Number(windows[questParam].min) : undefined;
+      const inferredMax = (questParam in windows && isObject(windows[questParam])) ? Number(windows[questParam].max) : undefined;
+
+      const questOpts = {
         ...a,
-        parameter: adaptiveMeta.parameter,
+        parameter: questParam,
         ...(Number.isFinite(inferredMin) && a.min_value === undefined ? { min_value: inferredMin } : {}),
         ...(Number.isFinite(inferredMax) && a.max_value === undefined ? { max_value: inferredMax } : {})
-      });
+      };
+
+      // Coarse/fine phase support
+      const trialsCoarse = Number.isFinite(Number(a.quest_trials_coarse ?? values.quest_trials_coarse))
+        ? Math.max(0, Math.round(Number(a.quest_trials_coarse ?? values.quest_trials_coarse)))
+        : 0;
+      const trialsFine = Number.isFinite(Number(a.quest_trials_fine ?? values.quest_trials_fine))
+        ? Math.max(0, Math.round(Number(a.quest_trials_fine ?? values.quest_trials_fine)))
+        : 0;
+      adaptiveMeta.trialsCoarse = trialsCoarse;
+      adaptiveMeta.trialsFine = trialsFine;
+
+      // Per-location staircase support
+      const perLocation = !!(a.staircase_per_location ?? values.quest_staircase_per_location);
+      adaptiveMeta.perLocation = perLocation;
+
+      // Store thresholds to window.cogflowState
+      const storeThreshold = !!(a.store_location_threshold ?? values.quest_store_location_threshold);
+      adaptiveMeta.storeThreshold = storeThreshold;
+
+      if (perLocation) {
+        adaptiveMeta.staircaseLeft = new QuestStaircase(questOpts);
+        adaptiveMeta.staircaseRight = new QuestStaircase(questOpts);
+        staircase = adaptiveMeta.staircaseLeft; // default; on_start will pick per trial
+      } else {
+        staircase = new QuestStaircase(questOpts);
+      }
+
+      adaptiveMeta.phaseTrialCount = 0;
+      adaptiveMeta.totalTrialCount = 0;
     }
 
     // RDM adaptive blocks (builder exports: windows.initial_coherence, windows.step_size, values.algorithm)
@@ -841,6 +877,80 @@
           delete t.value_cue_enabled;
           delete t.value_cue_probability;
         }
+
+        // Spatial cue validity coupling (for unilateral cues):
+        // - left/right cues are valid with p=spatial_cue_validity_probability
+        // - both/none leave target side untouched.
+        const pCueValid = Number(values.spatial_cue_validity_probability);
+        if (Number.isFinite(pCueValid)) {
+          const pValid = clamp(pCueValid, 0, 1);
+          const cue = (t.spatial_cue ?? 'none').toString().trim().toLowerCase();
+          const currentTarget = (t.target_location ?? 'left').toString().trim().toLowerCase();
+
+          let nextTarget = currentTarget;
+          let cueValid = null;
+
+          if (cue === 'left' || cue === 'right') {
+            cueValid = rng() < pValid;
+            nextTarget = cueValid ? cue : (cue === 'left' ? 'right' : 'left');
+          }
+
+          if (nextTarget === 'left' || nextTarget === 'right') {
+            t.target_location = nextTarget;
+          }
+          if (cueValid !== null) {
+            t.spatial_cue_valid = cueValid;
+          }
+        }
+
+        // Value cue target coupling: optionally force target to whichever side
+        // currently carries the selected value cue.
+        const valueTarget = (values.value_target_value ?? 'any').toString().trim().toLowerCase();
+        if (valueTarget === 'high' || valueTarget === 'low' || valueTarget === 'neutral') {
+          const lv = (t.left_value ?? 'neutral').toString().trim().toLowerCase();
+          const rv = (t.right_value ?? 'neutral').toString().trim().toLowerCase();
+
+          const candidates = [];
+          if (lv === valueTarget) candidates.push('left');
+          if (rv === valueTarget) candidates.push('right');
+
+          let chosen = null;
+          if (candidates.length === 1) {
+            chosen = candidates[0];
+          } else if (candidates.length > 1) {
+            chosen = rng() < 0.5 ? 'left' : 'right';
+          } else {
+            // Ensure the selected target cue exists in the trial so learning blocks
+            // can enforce cue-target coupling consistently.
+            chosen = rng() < 0.5 ? 'left' : 'right';
+            if (chosen === 'left') t.left_value = valueTarget;
+            if (chosen === 'right') t.right_value = valueTarget;
+          }
+
+          if (chosen) {
+            t.target_location = chosen;
+            t.value_target_value = valueTarget;
+          }
+        }
+
+        // Optional reward-availability tagging by cue value at target location.
+        // This does not grant points by itself; it exposes trial metadata so
+        // reward logic can condition on cue-specific availability.
+        const availByValue = {
+          high: Number(values.reward_availability_high),
+          low: Number(values.reward_availability_low),
+          neutral: Number(values.reward_availability_neutral)
+        };
+
+        const targetSide = (t.target_location ?? '').toString().trim().toLowerCase();
+        const targetCue = (targetSide === 'right' ? t.right_value : t.left_value);
+        const cueKey = (targetCue ?? '').toString().trim().toLowerCase();
+        const pAvailRaw = availByValue[cueKey];
+        if (Number.isFinite(pAvailRaw)) {
+          const pAvail = clamp(pAvailRaw, 0, 1);
+          t.reward_availability_probability = pAvail;
+          t.reward_available = (rng() < pAvail);
+        }
       }
 
       // Stroop helper: ensure congruency labels match the sampled word/ink.
@@ -971,18 +1081,27 @@
         // previous trials can influence the next trial. Precomputing values here would
         // freeze the staircase.
         let realizedAdaptiveValue = null;
+        let activeStaircase = staircase;
 
         // Attach hooks (compiler will carry these into jsPsych trials).
         t.on_start = (trial) => {
+          // Per-location: pick the right staircase for this trial's target side.
+          if (adaptiveMeta.perLocation && adaptiveMeta.staircaseLeft && adaptiveMeta.staircaseRight) {
+            const loc = (trial.target_location || '').toString().toLowerCase();
+            activeStaircase = (loc === 'right') ? adaptiveMeta.staircaseRight : adaptiveMeta.staircaseLeft;
+          } else {
+            activeStaircase = staircase;
+          }
+
           // If the parameter was already set by values/windows, adaptive should win.
           // For target_tilt_deg, QUEST adapts magnitude but we randomize sign for discriminate_tilt.
           let val;
           if (p === 'target_tilt_deg') {
-            const mag = Math.abs(Number(staircase.next()));
+            const mag = Math.abs(Number(activeStaircase.next()));
             const sign = rng() < 0.5 ? -1 : 1;
             val = sign * mag;
           } else {
-            val = staircase.next();
+            val = activeStaircase.next();
           }
 
           realizedAdaptiveValue = val;
@@ -1014,7 +1133,43 @@
             isCorrect = (data.response_side !== null && data.response_side === data.correct_side);
           }
 
-          staircase.update(isCorrect);
+          activeStaircase.update(isCorrect);
+          adaptiveMeta.phaseTrialCount += 1;
+          adaptiveMeta.totalTrialCount += 1;
+
+          // Coarse → fine phase transition: reinitialize with tighter SD around current mean.
+          if (adaptiveMeta.trialsCoarse > 0 && adaptiveMeta.phaseTrialCount === adaptiveMeta.trialsCoarse) {
+            const reinit = (sc) => {
+              const currentMean = sc.meanThreshold();
+              const origSd = Number.isFinite(Number(questOpts.start_sd)) ? Number(questOpts.start_sd) : 20;
+              return new QuestStaircase({
+                ...questOpts,
+                start_value: currentMean,
+                start_sd: Math.max(0.5, origSd * 0.4)
+              });
+            };
+            if (adaptiveMeta.perLocation) {
+              adaptiveMeta.staircaseLeft = reinit(adaptiveMeta.staircaseLeft);
+              adaptiveMeta.staircaseRight = reinit(adaptiveMeta.staircaseRight);
+              staircase = adaptiveMeta.staircaseLeft;
+            } else {
+              staircase = reinit(staircase);
+            }
+          }
+
+          // Store per-location thresholds to window.cogflowState when storeThreshold is set.
+          if (adaptiveMeta.storeThreshold) {
+            try {
+              window.cogflowState = window.cogflowState || {};
+              window.cogflowState.gabor_thresholds = window.cogflowState.gabor_thresholds || {};
+              if (adaptiveMeta.perLocation) {
+                window.cogflowState.gabor_thresholds.left = adaptiveMeta.staircaseLeft.meanThreshold();
+                window.cogflowState.gabor_thresholds.right = adaptiveMeta.staircaseRight.meanThreshold();
+              } else {
+                window.cogflowState.gabor_thresholds.combined = staircase.meanThreshold();
+              }
+            } catch { /* ignore */ }
+          }
 
           // Keep the realized adaptive value on the data for analysis.
           if (data && typeof data === 'object') {
@@ -1252,7 +1407,8 @@
     const preserveNbackBlocks = (experimentType === 'continuous' && taskType === 'nback');
     const preserveBlocksFor = [
       ...(preservePvtBlocks ? ['pvt-trial'] : []),
-      ...(preserveNbackBlocks ? ['nback-block', 'nback', 'nback-trial-sequence'] : [])
+      ...(preserveNbackBlocks ? ['nback-block', 'nback', 'nback-trial-sequence'] : []),
+      'gabor-learning'
     ];
 
     const expandedRaw = expandTimeline(config.timeline, {
@@ -1534,6 +1690,10 @@
 
     const isRewardSuccess = (event, policy) => {
       const p = (policy && typeof policy === 'object') ? policy : {};
+      // If the trial explicitly marked reward as unavailable (e.g. Gabor value-cue
+      // learning where the cue on the target side has 0% reward probability on this
+      // trial), no points are awarded regardless of accuracy or RT.
+      if (event.reward_available === false) return false;
       const basis = (p.scoring_basis || 'both').toString().trim().toLowerCase();
       const rtThresh = Number(p.rt_threshold_ms);
 
@@ -1575,7 +1735,10 @@
         const evt = {
           plugin_type: pluginType || null,
           rt_ms: getRtMsFromData(data),
-          correct: getCorrectFromData(data)
+          correct: getCorrectFromData(data),
+          // If the trial tagged reward_available (Gabor cue-learning), carry it through
+          // so isRewardSuccess can gate points on whether the cue offered a reward.
+          reward_available: (typeof data.reward_available === 'boolean') ? data.reward_available : undefined
         };
 
         events.push(evt);
@@ -1954,6 +2117,31 @@
 
     for (const item of expanded) {
       const type = item.type;
+
+      // Backward compatibility: some Builder exports include eye-tracking as a
+      // timeline component instead of under data_collection. This is config-only
+      // and should not create a visible trial.
+      if (type === 'eye-tracking' || type === 'eye_tracking') {
+        try {
+          const dc = isObject(config.data_collection) ? { ...config.data_collection } : {};
+          const existing = isObject(dc.eye_tracking)
+            ? dc.eye_tracking
+            : (isObject(dc['eye-tracking']) ? dc['eye-tracking'] : {});
+
+          const merged = {
+            ...existing,
+            enabled: true,
+            ...(isObject(item) ? item : {})
+          };
+          delete merged.type;
+
+          dc.eye_tracking = merged;
+          config.data_collection = dc;
+        } catch {
+          // ignore
+        }
+        continue;
+      }
 
       if (type === 'detection-response-task-start') {
         timeline.push({
@@ -2616,6 +2804,20 @@
         continue;
       }
 
+      // MOT task
+      if (type === 'mot-trial') {
+        const Mot = requirePlugin('mot (window.jsPsychMot)', window.jsPsychMot);
+        const onFinish = maybeWrapOnFinishWithRewards(typeof item.on_finish === 'function' ? item.on_finish : null, type);
+        const trial = {
+          ...item,
+          type: Mot,
+          ...(onFinish ? { on_finish: onFinish } : {}),
+          data: { plugin_type: type, task_type: 'mot' }
+        };
+        timeline.push(maybeWrapTrialWithRewardPopups(trial, type));
+        continue;
+      }
+
       // Continuous Image Presentation (one data row per image)
       if (type === 'continuous-image-presentation') {
         const Cip = requirePlugin(
@@ -2697,6 +2899,245 @@
           data: { plugin_type: 'nback-continuous', task_type: 'nback', original_type: type }
         };
         timeline.push(maybeWrapTrialWithRewardPopups(trial, 'nback-continuous'));
+        continue;
+      }
+
+      // Gabor learning block (loop until accuracy criterion met)
+      if (type === 'block' && (() => {
+        const bt = (typeof item.component_type === 'string' && item.component_type.trim())
+          ? item.component_type.trim()
+          : (typeof item.block_component_type === 'string' && item.block_component_type.trim())
+            ? item.block_component_type.trim()
+            : '';
+        return bt === 'gabor-learning';
+      })()) {
+        const Gabor = requirePlugin('gabor (window.jsPsychGabor)', window.jsPsychGabor);
+
+        const src = (item && typeof item === 'object' && item.parameter_values && typeof item.parameter_values === 'object')
+          ? { ...item, ...item.parameter_values }
+          : (item || {});
+
+        const learningWindows = (() => {
+          if (isObject(item?.parameter_windows)) return { ...item.parameter_windows };
+          if (Array.isArray(item?.parameter_windows)) {
+            const out = {};
+            for (const w of item.parameter_windows) {
+              if (!isObject(w)) continue;
+              const p = (w.parameter ?? '').toString().trim();
+              if (!p) continue;
+              out[p] = { min: w.min, max: w.max };
+            }
+            return out;
+          }
+          return {};
+        })();
+
+        const learningSeed = Number.isFinite(Number(src.seed)) ? (Number(src.seed) >>> 0) : null;
+        const learningRng = (learningSeed === null) ? Math.random : mulberry32(learningSeed);
+
+        const pickOne = (v) => {
+          if (Array.isArray(v)) {
+            if (v.length === 0) return null;
+            const idx = Math.floor(learningRng() * v.length);
+            return v[Math.max(0, Math.min(v.length - 1, idx))];
+          }
+          return v;
+        };
+
+        const sampleWindowValue = (min, max, paramName) => {
+          const a = Number(min);
+          const b = Number(max);
+          if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+          const lo = Math.min(a, b);
+          const hi = Math.max(a, b);
+          const s = lo + (hi - lo) * learningRng();
+          const isCyclesPerPx = /cyc_per_px$/i.test(paramName || '');
+          const shouldRound = !isCyclesPerPx && /(_ms|_px|_deg|_count|_trials|_repetitions)$/i.test(paramName || '');
+          return shouldRound ? Math.round(s) : s;
+        };
+
+        const applyCueLearningPolicies = (trial) => {
+          const hasSpatialGate = (
+            Object.prototype.hasOwnProperty.call(src, 'spatial_cue_enabled')
+            || Object.prototype.hasOwnProperty.call(src, 'spatial_cue_probability')
+          );
+          const hasValueGate = (
+            Object.prototype.hasOwnProperty.call(src, 'value_cue_enabled')
+            || Object.prototype.hasOwnProperty.call(src, 'value_cue_probability')
+          );
+
+          if (hasSpatialGate || hasValueGate) {
+            const spatialEnabled = Object.prototype.hasOwnProperty.call(src, 'spatial_cue_enabled') ? (src.spatial_cue_enabled === true) : true;
+            const valueEnabled = Object.prototype.hasOwnProperty.call(src, 'value_cue_enabled') ? (src.value_cue_enabled === true) : true;
+
+            const pSpatial = Object.prototype.hasOwnProperty.call(src, 'spatial_cue_probability') ? clamp(src.spatial_cue_probability, 0, 1) : 1;
+            const pValue = Object.prototype.hasOwnProperty.call(src, 'value_cue_probability') ? clamp(src.value_cue_probability, 0, 1) : 1;
+
+            const spatialPresent = spatialEnabled && learningRng() < pSpatial;
+            const valuePresent = valueEnabled && learningRng() < pValue;
+
+            if (!spatialPresent) {
+              trial.spatial_cue = 'none';
+            } else {
+              const opts = normalizeOptions(trial.spatial_cue ?? src.spatial_cue);
+              const filtered = opts.filter(x => (x ?? '').toString().trim().toLowerCase() !== 'none');
+              const picked = sampleFromOptions(filtered.length > 0 ? filtered : opts);
+              trial.spatial_cue = picked === null ? (trial.spatial_cue ?? 'none') : picked;
+            }
+
+            if (!valuePresent) {
+              trial.left_value = 'neutral';
+              trial.right_value = 'neutral';
+            } else {
+              const lvOpts = normalizeOptions(trial.left_value ?? src.left_value);
+              const rvOpts = normalizeOptions(trial.right_value ?? src.right_value);
+              const lvFiltered = lvOpts.filter(x => (x ?? '').toString().trim().toLowerCase() !== 'neutral');
+              const rvFiltered = rvOpts.filter(x => (x ?? '').toString().trim().toLowerCase() !== 'neutral');
+
+              const leftPicked = sampleFromOptions(lvFiltered.length > 0 ? lvFiltered : lvOpts);
+              const rightPicked = sampleFromOptions(rvFiltered.length > 0 ? rvFiltered : rvOpts);
+
+              if (leftPicked !== null) trial.left_value = leftPicked;
+              if (rightPicked !== null) trial.right_value = rightPicked;
+            }
+          }
+
+          const pCueValid = Number(src.spatial_cue_validity_probability);
+          if (Number.isFinite(pCueValid)) {
+            const pValid = clamp(pCueValid, 0, 1);
+            const cue = (trial.spatial_cue ?? 'none').toString().trim().toLowerCase();
+            const currentTarget = (trial.target_location ?? 'left').toString().trim().toLowerCase();
+
+            let nextTarget = currentTarget;
+            let cueValid = null;
+
+            if (cue === 'left' || cue === 'right') {
+              cueValid = learningRng() < pValid;
+              nextTarget = cueValid ? cue : (cue === 'left' ? 'right' : 'left');
+            }
+
+            if (nextTarget === 'left' || nextTarget === 'right') {
+              trial.target_location = nextTarget;
+            }
+            if (cueValid !== null) {
+              trial.spatial_cue_valid = cueValid;
+            }
+          }
+
+          const valueTarget = (src.value_target_value ?? 'any').toString().trim().toLowerCase();
+          if (valueTarget === 'high' || valueTarget === 'low' || valueTarget === 'neutral') {
+            const lv = (trial.left_value ?? 'neutral').toString().trim().toLowerCase();
+            const rv = (trial.right_value ?? 'neutral').toString().trim().toLowerCase();
+
+            const candidates = [];
+            if (lv === valueTarget) candidates.push('left');
+            if (rv === valueTarget) candidates.push('right');
+
+            let chosen = null;
+            if (candidates.length === 1) {
+              chosen = candidates[0];
+            } else if (candidates.length > 1) {
+              chosen = learningRng() < 0.5 ? 'left' : 'right';
+            } else {
+              chosen = learningRng() < 0.5 ? 'left' : 'right';
+              if (chosen === 'left') trial.left_value = valueTarget;
+              if (chosen === 'right') trial.right_value = valueTarget;
+            }
+
+            if (chosen) {
+              trial.target_location = chosen;
+              trial.value_target_value = valueTarget;
+            }
+          }
+
+          const availByValue = {
+            high: Number(src.reward_availability_high),
+            low: Number(src.reward_availability_low),
+            neutral: Number(src.reward_availability_neutral)
+          };
+          const targetSide = (trial.target_location ?? '').toString().trim().toLowerCase();
+          const targetCue = (targetSide === 'right' ? trial.right_value : trial.left_value);
+          const cueKey = (targetCue ?? '').toString().trim().toLowerCase();
+          const pAvailRaw = availByValue[cueKey];
+          if (Number.isFinite(pAvailRaw)) {
+            const pAvail = clamp(pAvailRaw, 0, 1);
+            trial.reward_availability_probability = pAvail;
+            trial.reward_available = (learningRng() < pAvail);
+          }
+        };
+
+        const streakLength = Math.max(1, Number.parseInt(src.learning_streak_length ?? 20, 10) || 20);
+        const targetAccuracy = Number.isFinite(Number(src.learning_target_accuracy)) ? Number(src.learning_target_accuracy) : 0.9;
+        const maxTrials = Math.max(1, Number.parseInt(src.learning_max_trials ?? 200, 10) || 200);
+        const showFeedback = src.show_feedback !== false;
+        const feedbackDurationMs = Math.max(0, Number(src.feedback_duration_ms ?? 800) || 0);
+
+        const gLearningState = { trialCount: 0, history: [] };
+
+        const trialTemplate = {
+          type: Gabor,
+          ...gaborDefaults,
+
+          on_start: (trial) => {
+            // Apply all block param values at runtime; allow fall-through to gaborDefaults above.
+            for (const [k, v] of Object.entries(src)) {
+              if (
+                k === 'learning_streak_length' || k === 'learning_target_accuracy' ||
+                k === 'learning_max_trials' || k === 'show_feedback' ||
+                k === 'feedback_duration_ms' || k === 'block_component_type' ||
+                k === 'component_type' || k === 'block_length' || k === 'type' ||
+                k === 'parameter_values' || k === 'parameter_windows' ||
+                k === 'spatial_cue_enabled' || k === 'spatial_cue_probability' ||
+                k === 'value_cue_enabled' || k === 'value_cue_probability' ||
+                k === 'spatial_cue_validity_probability' || k === 'value_target_value' ||
+                k === 'reward_availability_high' || k === 'reward_availability_low' ||
+                k === 'reward_availability_neutral'
+              ) continue;
+              if (trial[k] === undefined) trial[k] = pickOne(v);
+            }
+
+            for (const [k, w] of Object.entries(learningWindows)) {
+              if (!isObject(w)) continue;
+              const sampled = sampleWindowValue(w.min, w.max, k);
+              if (sampled === null) continue;
+              trial[k] = sampled;
+            }
+
+            applyCueLearningPolicies(trial);
+
+            trial.show_feedback = showFeedback;
+            trial.feedback_duration_ms = feedbackDurationMs;
+            trial.data = {
+              plugin_type: 'gabor-trial',
+              task_type: 'gabor',
+              gabor_learning_block: true,
+              gabor_learning_trial: gLearningState.trialCount,
+              ...(typeof trial.spatial_cue_valid === 'boolean' ? { spatial_cue_valid: trial.spatial_cue_valid } : {}),
+              ...(typeof trial.reward_available === 'boolean' ? { reward_available: trial.reward_available } : {}),
+              ...(Number.isFinite(Number(trial.reward_availability_probability)) ? { reward_availability_probability: Number(trial.reward_availability_probability) } : {})
+            };
+          },
+
+          on_finish: (data) => {
+            gLearningState.trialCount += 1;
+            const correct = (data && (data.correctness === true || data.correct === true));
+            gLearningState.history.push(correct ? 1 : 0);
+            if (gLearningState.history.length > streakLength) {
+              gLearningState.history.shift();
+            }
+          }
+        };
+
+        timeline.push({
+          timeline: [trialTemplate],
+          loop_function: () => {
+            if (gLearningState.trialCount >= maxTrials) return false;
+            if (gLearningState.history.length < streakLength) return true;
+            const acc = gLearningState.history.reduce((a, b) => a + b, 0) / streakLength;
+            return acc < targetAccuracy;
+          },
+          data: { plugin_type: 'gabor-learning', task_type: 'gabor' }
+        });
         continue;
       }
 

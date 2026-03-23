@@ -104,7 +104,9 @@
       display_element.innerHTML = `
         <div id="sart-wrap" style="position:relative; width:100%; min-height:100vh; padding:24px 12px; box-sizing:border-box; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:12px; text-align:center;">
           ${fixationHtml}
-          <div id="sart-stim" style="font-size:72px; font-weight:800; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-variant-numeric: tabular-nums;">${esc(String(digit))}</div>
+          <div style="height:88px; display:flex; align-items:center; justify-content:center;">
+            <div id="sart-stim" style="font-size:72px; line-height:1; width:1.2ch; min-width:1.2ch; min-height:1em; font-weight:800; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-variant-numeric: tabular-nums; text-align:center;">${esc(String(digit))}</div>
+          </div>
           <div style="opacity:0.65; font-size: 12px;">Press ${esc(goKey === ' ' ? 'space' : goKey)} for GO (do not press for ${esc(String(nogoDigit))})</div>
         </div>
       `;
@@ -178,7 +180,7 @@
       // Mask -> blank (optional)
       if (Number.isFinite(maskMs) && maskMs > 0) {
         this.jsPsych.pluginAPI.setTimeout(() => {
-          if (stimEl) stimEl.textContent = '';
+          if (stimEl) stimEl.textContent = '\u00A0';
         }, stimMs + maskMs);
       }
 

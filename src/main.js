@@ -1,7 +1,7 @@
 (function () {
   try {
-    window.__COGFLOW_INTERPRETER_VERSION = '20260223-16';
-      console.log('[Interpreter] main.js loaded', '20260224-1');
+    window.__COGFLOW_INTERPRETER_VERSION = '20260324-2';
+      console.log('[Interpreter] main.js loaded', '20260324-2');
   } catch {
     // ignore
   }
@@ -568,7 +568,12 @@
     }
 
     try {
-      const fromQuery = (getQueryParam('launch') || '').toString().trim();
+      const fromQuery = (
+        getQueryParam('launch_token') ||
+        getQueryParam('launch') ||
+        getQueryParam('token') ||
+        ''
+      ).toString().trim();
       return fromQuery || null;
     } catch {
       return null;
@@ -1270,6 +1275,22 @@
         return false;
       }
     })();
+
+    const isDjangoLaunchMode = (() => {
+      try {
+        const hasLaunchToken = new URLSearchParams(window.location?.search || '').has('launch_token');
+        const hasPlatformHost = typeof window.COGFLOW_PLATFORM_URL === 'string' && window.COGFLOW_PLATFORM_URL.trim() !== '';
+        return hasLaunchToken || hasPlatformHost;
+      } catch {
+        return false;
+      }
+    })();
+
+    // In platform launch-token mode, JATOS is intentionally absent.
+    // Avoid probing /jatos.js endpoints that return 404 HTML and generate MIME warnings.
+    if (isDjangoLaunchMode && !probablyPublix) {
+      return false;
+    }
 
     if (isJatosReady()) return true;
 

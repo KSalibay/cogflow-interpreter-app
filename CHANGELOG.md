@@ -1,5 +1,31 @@
 # CogFlow Interpreter Changelog
 
+## March 25, 2026
+
+### Runtime Follow-up (Sachi, Tariq, Guy)
+
+#### RDM Continuous: Lifetime + Motion Semantics
+- Fixed refresh-rate sensitivity in continuous RDM lifetime handling.
+  - Dot lifetime aging is now time-based (60Hz-equivalent), not tied to raw monitor refresh frequency.
+- Kept coherence/direction as exact per-frame values during transitions (no blending of motion-definition fields).
+- Added noise-type normalization aliases (`brownian`, `correlated_noise`, hyphen variants) to ensure stable runtime behavior.
+
+#### RDM Diagnostics
+- Added runtime debug panel for continuous RDM:
+  - Toggle with `Ctrl+Shift+D`.
+  - Enable at load with `?rdm_debug=1`.
+  - Shows target vs measured coherence/speed/direction, noise mode, lifetime, reseeds, and noise-jump counts.
+- Added persistent debug toggle support via localStorage and global runtime flag.
+
+#### MW Probe Scheduling in Loop/Block Runs
+- Updated mw-probe interruption scheduling to place probes inside surrounding generated block trials (not only at boundaries).
+- Scheduling now supports generated runs around the probe marker (before and after placement point) and re-samples per loop iteration.
+- Added fallback generated-trial duration estimation so jitter placement works even when explicit per-trial duration fields are absent.
+
+#### DRT + Continuous RDM Display Mode Notes
+- Preserved continuous-mode DRT overlay behavior while integrating probe and RDM diagnostics updates.
+- Continuous RDM remains single-canvas rendering with segment-level compiler transitions and per-frame response/deadline handling.
+
 ## March 20, 2026
 
 ### Runtime Updates

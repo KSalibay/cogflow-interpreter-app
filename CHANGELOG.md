@@ -1,5 +1,30 @@
 # CogFlow Interpreter Changelog
 
+## March 27, 2026
+
+### RDM Block Direction Transition Scheduling (Runtime)
+
+- Added block-expansion runtime support for direction transition scheduling exported by Builder.
+- Supported controls:
+  - `direction_transition_mode`: `random_each_trial` | `every_n_trials` | `exact_count`
+  - `direction_transition_every_n_trials`
+  - `direction_transition_count`
+- Supported block component types:
+  - `rdm-trial` (controls `direction`)
+  - `rdm-practice` (controls `direction`)
+  - `rdm-dot-groups` (controls `group_1_direction` and `group_2_direction`)
+- Scheduling behavior:
+  - `random_each_trial`: existing per-trial random direction sampling
+  - `every_n_trials`: switch direction every N generated trials
+  - `exact_count`: distribute exactly K direction switches across the block
+
+#### Deployment / Sync
+
+- Synced Interpreter changes to active local JATOS Interpreter paths:
+  - `/study_assets_root/cogflow/interpreter/`
+  - `/study_assets_root/cogflow_clone/interpreter/`
+  - plus clone mirror interpreter path under `/study_assets_root/cogflow_clone/cogflow-interpreter-app/`
+
 ## March 25, 2026
 
 ### Runtime Follow-up (Sachi, Tariq, Guy)

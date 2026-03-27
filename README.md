@@ -218,6 +218,7 @@ Common components:
 Task components:
 
 - RDM: `rdm-trial`, `rdm-practice`, `rdm-adaptive`, `rdm-dot-groups` (continuous exports may compile contiguous frames into `rdm-continuous` segments)
+  - During RDM block expansion, the Interpreter applies Builder-exported timing windows (`stimulus_duration`, `response_deadline`, `inter_trial_interval`) and direction transition schedules (`random_each_trial`, `every_n_trials`, `exact_count`).
 - Flanker: `flanker-trial`
 - SART: `sart-trial`
 - Gabor: `gabor-trial`

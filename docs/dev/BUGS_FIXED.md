@@ -7,6 +7,29 @@ This document is a running, developer-facing changelog of bug fixes across:
 
 ---
 
+## 2026-03-27 — RDM block direction-transition scheduling
+
+### Builder-authored direction transition cadence/count now applied at runtime
+
+- **Symptom**: Researchers could only randomize direction per trial when using RDM Blocks; they could not control direction transition frequency/count within a generated block.
+- **Fix**: Interpreter block expansion now applies Builder-exported direction transition scheduling controls:
+  - `direction_transition_mode`: `random_each_trial` | `every_n_trials` | `exact_count`
+  - `direction_transition_every_n_trials`
+  - `direction_transition_count`
+- **Scope**:
+  - `rdm-trial`, `rdm-practice`, `rdm-dot-groups`
+  - works in both trial-based and continuous experiments
+
+**Interpreter file changed**
+- `cogflow-interpreter-app/src/timelineCompiler.js`
+
+**JATOS deployed sync**
+- `study_assets_root/cogflow/interpreter/src/timelineCompiler.js`
+- `study_assets_root/cogflow_clone/interpreter/src/timelineCompiler.js`
+- `study_assets_root/cogflow_clone/cogflow-interpreter-app/src/timelineCompiler.js`
+
+---
+
 ## 2026-03-07 — Survey slider UX + schema-aligned data
 
 ### Survey slider questions now show selected value

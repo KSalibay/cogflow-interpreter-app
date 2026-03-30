@@ -102,7 +102,18 @@ CogFlow Interpreter is a static jsPsych runtime that loads a CogFlow config (oft
 Key features:
 
 - Token Store loading (single-config or multi-config bundle via JATOS Component Properties)
-- Block expansion (parameter windows/ranges) + adaptive blocks (QUEST/staircase)
+- Block expansion (parameter windows/ranges) + adaptive blocks (QUEST/staircase), including continuous-mode `block_sizing_mode: "by_duration"` where block seconds are converted to frame counts via experiment `frame_rate`
+- Numeric list-range shorthand fallback at runtime (for robustness): if a list string like `1-4` appears in config values, it is interpreted as `1,2,3,4` during sampling
+- Structural marker normalization and ordering semantics:
+  - loop marker pairs (`loop-start` / `loop-end`) are normalized to loop nodes and expanded by iteration count
+  - randomization marker pairs (`randomize-start` / `randomize-end`) are normalized to randomization groups and shuffled once per run
+  - items outside a randomization group remain in authored order (immutable relative to surrounding timeline)
+- RDM dot-groups runtime switching:
+  - if `dynamic_target_group_switch_enabled` is true, the compiler normalizes the exported `N-N` frame range and the engine alternates the active target group at random intervals drawn from that range
+  - cue borders in `target-group-color` mode follow the active target group in real time
+  - response correctness and feedback use the current live target group at the moment of response
+- RDM dot-groups dependent direction of movement:
+  - if `dependent_direction_of_movement_enabled` is true, the independent group direction fields are replaced by `dependent_group_1_direction` (base range) and `dependent_group_direction_difference` (offset list); at block expansion time, group 1's direction is sampled from the base range and group 2's direction is computed as `(group_1_direction + sampled_difference) mod 360`
 - Trial-based tasks + continuous-mode tasks (including SOC Dashboard)
 - DRT (Detection Response Task) scheduling via explicit start/stop components (ISO defaults supported)
 - Rewards v2 integration (compile-time wrapping + runtime screens/milestones)
@@ -215,10 +226,22 @@ Common components:
 - `block`
 - `detection-response-task-start`, `detection-response-task-stop`
 
+Structural timeline nodes (typically normalized from Builder markers):
+
+- `loop`
+- `randomize-group`
+
+Randomization scope:
+
+- The interpreter shuffles only the children of each `randomize-group`.
+- Timeline items outside that group are not reordered.
+
 Task components:
 
 - RDM: `rdm-trial`, `rdm-practice`, `rdm-adaptive`, `rdm-dot-groups` (continuous exports may compile contiguous frames into `rdm-continuous` segments)
   - During RDM block expansion, the Interpreter applies Builder-exported timing windows (`stimulus_duration`, `response_deadline`, `inter_trial_interval`) and direction transition schedules (`random_each_trial`, `every_n_trials`, `exact_count`).
+  - For `rdm-dot-groups`, the Interpreter also honors `dynamic_target_group_switch_enabled` plus `dynamic_target_group_every_n_frames`. When enabled, it samples a random inclusive frame interval from the exported range, flips `response_target_group` between group 1 and group 2 at each interval, updates cue-border target coloring against the live target group, and scores responses against that live target rather than only the initial block state.
+  - `rdm-dot-groups` also supports dependent direction of movement: when `dependent_direction_of_movement_enabled` is true, each generated trial samples a base direction from `dependent_group_1_direction` and an offset from `dependent_group_direction_difference`, then sets `group_2_direction = (base + offset) mod 360` before the trial runs.
 - Flanker: `flanker-trial`
 - SART: `sart-trial`
 - Gabor: `gabor-trial`

@@ -6,22 +6,6 @@
 
 Static runtime that loads a CogFlow Builder export and runs it via jsPsych.
 
-## Recent updates (Apr 2026)
-
-Recent runtime changes now reflected in production behavior:
-
-- SOC Dashboard MW-probe behavior:
-  - MW-probe is supported as a true full-viewport SOC overlay window (not a small embedded pane).
-  - While MW-probe is active, other SOC subtasks are suppressed to avoid concurrent interaction.
-  - Probe completion dismisses immediately and proceeds to the next eligible scheduled item.
-- SOC SART-like behavior fixes:
-  - Scheduled end timing for popup-gated subtasks now respects active task time from popup dismissal (instead of consuming time while instructions are visible).
-  - Triage action semantics were aligned so `block`/`allow` conditions map correctly into response/correctness event payloads.
-- DRT runtime path:
-  - Background DRT is controlled via explicit timeline components (`detection-response-task-start` / `detection-response-task-stop`) with deterministic start/stop boundaries.
-- MOT runtime expansion:
-  - MOT now supports aperture shape selection (`rectangle` / `circle`) and aperture border rendering controls end-to-end.
-
 ## Contents
 
 - [Recommended workflow (JATOS)](#recommended-workflow-builder--token-store--interpreter-jatos)

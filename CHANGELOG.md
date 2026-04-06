@@ -1,5 +1,21 @@
 # CogFlow Interpreter Changelog
 
+## April 2, 2026
+
+### SOC MW-Probe, SOC SART Timing/Semantics, DRT Boundaries, MOT Aperture
+
+- SOC Dashboard MW-probe runtime behavior updated:
+  - MW-probe now renders as a full-viewport SOC overlay.
+  - Non-MW SOC subtask windows are suppressed while MW-probe is active.
+  - Probe completion dismisses immediately and resumes normal scheduling.
+- SOC SART-like runtime fixes:
+  - Popup-gated subtask active timing now begins on popup dismissal.
+  - `go_condition` semantics (`block` / `allow`) are aligned with emitted response/correctness payloads.
+- DRT runtime path uses explicit timeline boundaries:
+  - `detection-response-task-start` and `detection-response-task-stop` govern deterministic DRT activation windows.
+- MOT runtime support extended:
+  - Aperture shape (`rectangle` / `circle`) and aperture border controls are honored end-to-end.
+
 ## March 27, 2026
 
 ### RDM Block Direction Transition Scheduling (Runtime)

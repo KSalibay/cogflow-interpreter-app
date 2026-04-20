@@ -122,6 +122,76 @@
     return normalizeAngleDeg(Number(p.direction ?? p.coherent_direction ?? 0));
   }
 
+  function angularDistanceDeg(a, b) {
+    const aa = normalizeAngleDeg(a);
+    const bb = normalizeAngleDeg(b);
+    const d = Math.abs(aa - bb);
+    return Math.min(d, 360 - d);
+  }
+
+  function resolveArrowFeedbackColor(feedback, isCorrect) {
+    const fb = feedback && typeof feedback === 'object' ? feedback : {};
+    const modeRaw = (fb.arrow_color_mode ?? 'auto').toString().trim().toLowerCase();
+    const mode = (modeRaw === 'inherit' || modeRaw === '') ? 'auto' : modeRaw;
+
+    if (mode === 'neutral') return (fb.arrow_neutral_color || '#CBD5E1').toString();
+    if (mode === 'custom') return (fb.arrow_custom_color || '#93A3B8').toString();
+    return isCorrect
+      ? (fb.arrow_correct_color || '#5CFF8A').toString()
+      : (fb.arrow_incorrect_color || '#FF5C5C').toString();
+  }
+
+  function resolveArrowFeedbackStyle(feedback) {
+    const fb = feedback && typeof feedback === 'object' ? feedback : {};
+    const sizeRaw = Number(fb.arrow_size_px);
+    const lineWidthRaw = Number(fb.arrow_line_width_px);
+    return {
+      arrowSizePx: (Number.isFinite(sizeRaw) && sizeRaw > 0) ? sizeRaw : null,
+      arrowLineWidthPx: (Number.isFinite(lineWidthRaw) && lineWidthRaw > 0) ? lineWidthRaw : null,
+    };
+  }
+
+  function evaluateMouseCorrectness(meta, activeRdm, response, fallbackSide, fallbackCorrectSide) {
+    const mouse = (response && response.mouse_response && typeof response.mouse_response === 'object')
+      ? response.mouse_response
+      : {};
+    const segments = Math.max(2, Number(mouse.segments ?? 2));
+    const modeRaw = (mouse.accuracy_mode ?? '').toString().trim().toLowerCase();
+    const mode = (modeRaw === 'angular' || modeRaw === 'side')
+      ? modeRaw
+      : (segments > 2 ? 'angular' : 'side');
+
+    if (mode === 'side' || !meta || !Number.isFinite(meta.raw_angle_deg)) {
+      return {
+        isCorrect: (fallbackSide !== null && fallbackCorrectSide !== null) ? (fallbackSide === fallbackCorrectSide) : null,
+        method: 'side',
+        angleErrorDeg: null,
+        toleranceDeg: null,
+        targetDirectionDeg: null,
+      };
+    }
+
+    const targetDirectionDeg = getCorrectDirectionDeg(activeRdm || {});
+    const responseDirectionDeg = normalizeAngleDeg(meta.raw_angle_deg);
+    const angleErrorDeg = angularDistanceDeg(responseDirectionDeg, targetDirectionDeg);
+
+    const toleranceRaw = Number(mouse.accuracy_tolerance_deg);
+    const baseToleranceDeg = (Number.isFinite(toleranceRaw) && toleranceRaw > 0)
+      ? toleranceRaw
+      : (180 / segments);
+    const slackRaw = Number(mouse.accuracy_slack_deg);
+    const slackDeg = (Number.isFinite(slackRaw) && slackRaw > 0) ? slackRaw : 0;
+    const toleranceDeg = Math.max(0, baseToleranceDeg + slackDeg);
+
+    return {
+      isCorrect: angleErrorDeg <= toleranceDeg,
+      method: 'angular',
+      angleErrorDeg,
+      toleranceDeg,
+      targetDirectionDeg,
+    };
+  }
+
   class JsPsychRdmContinuousPlugin {
     constructor(jsPsych) {
       this.jsPsych = jsPsych;
@@ -196,6 +266,10 @@
       let frameResponseWithinAperture = null;
       let frameResponseWithinBoundaryBand = null;
       let frameResponseWithinCanvas = null;
+      let frameResponseAccuracyMethod = null;
+      let frameResponseAngleErrorDeg = null;
+      let frameResponseToleranceDeg = null;
+      let frameResponseTargetDirectionDeg = null;
 
       let frameMouseSelectionMode = null;
       let frameMouseRegionPolicy = null;
@@ -279,7 +353,7 @@
         if (!fb || !feedbackEl) return;
 
         const duration = safeNum((frame.rdm || {}).feedback_duration ?? fb.duration_ms, 150);
-        const color = isCorrect ? '#5CFF8A' : '#FF5C5C';
+        const color = resolveArrowFeedbackColor(fb, isCorrect);
 
         if (fb.type === 'corner-text') {
           feedbackEl.innerHTML = `<div style="width:${canvasW}px; display:flex; justify-content:space-between;">
@@ -288,9 +362,12 @@
           </div>`;
         } else if (fb.type === 'arrow') {
           const directionDeg = getCorrectDirectionDeg(frame.rdm || {});
+          const arrowStyle = resolveArrowFeedbackStyle(fb);
           if (engine) {
             engine.arrowDirectionDeg = directionDeg;
             engine.arrowColor = color;
+            engine.arrowSizePx = arrowStyle.arrowSizePx;
+            engine.arrowLineWidthPx = arrowStyle.arrowLineWidthPx;
           }
             feedbackEl.innerHTML = '';
         } else {
@@ -299,6 +376,12 @@
 
         window.setTimeout(() => {
           feedbackEl.innerHTML = '';
+          if (engine) {
+            engine.arrowDirectionDeg = null;
+            engine.arrowColor = null;
+            engine.arrowSizePx = null;
+            engine.arrowLineWidthPx = null;
+          }
         }, duration);
       };
 
@@ -333,8 +416,7 @@
           `fps=${snap && Number.isFinite(snap.fps) ? snap.fps.toFixed(1) : 'n/a'}  reseeds/s=${snap ? snap.reseeds_per_sec : 'n/a'}  noise-jumps/s=${snap ? snap.noise_jumps_per_sec : 'n/a'}`,
           `coherence target=${targetCohPct !== null ? targetCohPct.toFixed(1) + '%' : 'n/a'} measured=${measuredCohPct !== null ? measuredCohPct.toFixed(1) + '%' : 'n/a'}`,
           `speed target=${targetSpeed !== null ? targetSpeed : 'n/a'} measured=${measuredSpeed !== null ? measuredSpeed.toFixed(2) : 'n/a'}  dir target=${targetDir !== null ? targetDir : 'n/a'} measured=${measuredDir !== null ? measuredDir.toFixed(1) : 'n/a'}`,
-          `response_device=${String(response.response_device || 'keyboard')} end_on_response=${response.end_condition_on_response === true}`,
-          `source_version=20260325-rdm-debug-1`
+          `response_device=${String(response.response_device || 'keyboard')} end_on_response=${response.end_condition_on_response === true}`
         ];
         debugPanelEl.textContent = lines.join('\n');
       };
@@ -393,6 +475,10 @@
           response_within_aperture: frameResponseWithinAperture,
           response_within_boundary_band: frameResponseWithinBoundaryBand,
           response_within_canvas: frameResponseWithinCanvas,
+          response_accuracy_method: frameResponseAccuracyMethod,
+          response_angle_error_deg: frameResponseAngleErrorDeg,
+          response_tolerance_deg: frameResponseToleranceDeg,
+          response_target_direction_deg: frameResponseTargetDirectionDeg,
           response_region_policy: frameMouseRegionPolicy,
           response_selection_mode: frameMouseSelectionMode,
           mouse_aperture_radius_px: frameMouseApertureRadiusPx,
@@ -428,6 +514,10 @@
         frameResponseWithinAperture = null;
         frameResponseWithinBoundaryBand = null;
         frameResponseWithinCanvas = null;
+        frameResponseAccuracyMethod = null;
+        frameResponseAngleErrorDeg = null;
+        frameResponseToleranceDeg = null;
+        frameResponseTargetDirectionDeg = null;
 
         frameMouseSelectionMode = null;
         frameMouseRegionPolicy = null;
@@ -567,7 +657,8 @@
           : rdm;
 
         const correctSide = computeCorrectSide(activeRdm);
-        const isCorrect = side ? side === correctSide : null;
+        const mouseEval = evaluateMouseCorrectness(meta, activeRdm, response, side, correctSide);
+        const isCorrect = side ? mouseEval.isCorrect : null;
 
         if (!respondedThisFrame) {
           respondedThisFrame = true;
@@ -584,6 +675,10 @@
           frameResponseWithinAperture = (meta && typeof meta.within_aperture === 'boolean') ? meta.within_aperture : null;
           frameResponseWithinBoundaryBand = (meta && typeof meta.within_boundary_band === 'boolean') ? meta.within_boundary_band : null;
           frameResponseWithinCanvas = (meta && typeof meta.within_canvas === 'boolean') ? meta.within_canvas : null;
+          frameResponseAccuracyMethod = mouseEval.method;
+          frameResponseAngleErrorDeg = mouseEval.angleErrorDeg;
+          frameResponseToleranceDeg = mouseEval.toleranceDeg;
+          frameResponseTargetDirectionDeg = mouseEval.targetDirectionDeg;
 
           // Attach response to the latest record (or create a response record)
           records.push({
@@ -617,7 +712,11 @@
             rt_ms: rt,
             correct_side: correctSide,
             accuracy: isCorrect,
-            correctness: isCorrect
+            correctness: isCorrect,
+            response_accuracy_method: mouseEval.method,
+            response_angle_error_deg: mouseEval.angleErrorDeg,
+            response_tolerance_deg: mouseEval.toleranceDeg,
+            response_target_direction_deg: mouseEval.targetDirectionDeg
           });
 
           if (isCorrect !== null) showFeedback(frame, isCorrect);
@@ -763,9 +862,10 @@
           const dy = y - apertureCy;
           const dist = Math.sqrt(dx * dx + dy * dy);
           const rawAngle = (Math.atan2(dy, dx) * 180) / Math.PI;
-          const angleFromStart = (rawAngle - startAngle + 360) % 360;
+          const uiAngle = parseAngleDegrees(rawAngle);
+          const angleFromStart = (uiAngle - startAngle + 360) % 360;
           const seg = Math.floor((angleFromStart / 360) * segments);
-          const side = (segments === 2) ? (seg === 0 ? 'right' : 'left') : (seg < segments / 2 ? 'right' : 'left');
+          const side = computeSideFromUiAngle(rawAngle);
           const inner = Math.max(0, apertureRadius - boundaryWidthPx);
           const outer = apertureRadius + boundaryWidthPx;
           return {

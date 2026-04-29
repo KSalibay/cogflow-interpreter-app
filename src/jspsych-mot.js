@@ -208,6 +208,7 @@
       let recognitionProbeIndices = [];
       let recognitionProbeCursor = 0;
       let recognitionTrials = [];
+      let feedbackSummaryText = '';
 
       const requestedRecognitionProbeCount = (() => {
         const n = Number.parseInt(recognition_probe_count, 10);
@@ -394,22 +395,10 @@
         document.removeEventListener('keydown', handleYesNoKey);
 
         const selArr = Array.from(selectedObjects);
-        let numCorrect = 0;
-        let numFalseAlarms = 0;
-        let numMissed = 0;
-
-        if (probe_mode === 'yes_no_recognition') {
-          const respondedTrials = recognitionTrials.filter(t => t && (t.recognition_is_yes === true || t.recognition_is_yes === false));
-          numCorrect = respondedTrials.filter(t => t.recognition_correct === true).length;
-          numFalseAlarms = respondedTrials.filter(t => t.recognition_is_yes === true && t.probe_object_is_target === false).length;
-          numMissed = respondedTrials.filter(t => t.recognition_is_yes === false && t.probe_object_is_target === true).length;
-        } else {
-          for (const idx of selArr) {
-            if (targetSet.has(idx)) numCorrect++;
-            else                    numFalseAlarms++;
-          }
-          numMissed = Math.max(0, num_targets - numCorrect);
-        }
+        const outcome = computeOutcomeMetrics();
+        const numCorrect = outcome.numCorrect;
+        const numFalseAlarms = outcome.numFalseAlarms;
+        const numMissed = outcome.numMissed;
 
         display_element.innerHTML = '';
         jsPsych.finishTrial({
@@ -434,6 +423,28 @@
           ended_reason:         endedReason,
           plugin_version:       '1.0.0'
         });
+      }
+
+      function computeOutcomeMetrics() {
+        const selArr = Array.from(selectedObjects);
+        let numCorrect = 0;
+        let numFalseAlarms = 0;
+        let numMissed = 0;
+
+        if (probe_mode === 'yes_no_recognition') {
+          const respondedTrials = recognitionTrials.filter(t => t && (t.recognition_is_yes === true || t.recognition_is_yes === false));
+          numCorrect = respondedTrials.filter(t => t.recognition_correct === true).length;
+          numFalseAlarms = respondedTrials.filter(t => t.recognition_is_yes === true && t.probe_object_is_target === false).length;
+          numMissed = respondedTrials.filter(t => t.recognition_is_yes === false && t.probe_object_is_target === true).length;
+        } else {
+          for (const idx of selArr) {
+            if (targetSet.has(idx)) numCorrect++;
+            else                    numFalseAlarms++;
+          }
+          numMissed = Math.max(0, num_targets - numCorrect);
+        }
+
+        return { numCorrect, numFalseAlarms, numMissed };
       }
 
       // ── probe: click mode ─────────────────────────────────────────────────
@@ -674,6 +685,14 @@
         drtResumeConfig = null;
 
         if (show_feedback) {
+          const outcome = computeOutcomeMetrics();
+          if (probe_mode === 'yes_no_recognition') {
+            const totalProbes = recognitionProbeIndices.length || requestedRecognitionProbeCount || 1;
+            feedbackSummaryText = `For this trial, you correctly identified ${outcome.numCorrect} out of ${totalProbes} probe decisions.`;
+          } else {
+            feedbackSummaryText = `For this trial, you correctly identified ${outcome.numCorrect} out of ${num_targets} target dots.`;
+          }
+          instrEl.textContent = feedbackSummaryText;
           phase      = 'feedback';
           phaseStart = performance.now();
         } else {
@@ -714,6 +733,7 @@
 
         } else if (phase === 'feedback') {
           drawObjects(false);      // rings drawn inside drawObjects
+          instrEl.textContent = feedbackSummaryText;
           if (elapsed >= feedback_duration_ms) {
             phase      = 'iti';
             phaseStart = performance.now();
